@@ -18,7 +18,7 @@ jobs:
             > /etc/xbps.d/00-repository-main.conf
           xbps-install -y -Su xbps
           xbps-install -y -u
-          xbps-install -y gcc make pkg-config libarchive-devel \
+          xbps-install -y gcc make pkg-config xbps-devel libarchive-devel \
             openssl-devel shellcheck git
       - name: clone
         run: |
@@ -58,7 +58,7 @@ jobs:
             > /etc/xbps.d/00-repository-main.conf
           xbps-install -y -Su xbps
           xbps-install -y -u
-          xbps-install -y gcc make pkg-config libarchive-devel \
+          xbps-install -y gcc make pkg-config xbps-devel libarchive-devel \
             openssl-devel git
       - name: clone
         run: |
