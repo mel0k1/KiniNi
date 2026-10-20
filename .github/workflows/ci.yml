@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: build and smoke test
+    runs-on: ubuntu-latest
+    container: voidlinux/voidlinux
+    steps:
+      - name: install toolchain
+        run: |
+          xbps-install -Syu xbps
+          xbps-install -y gcc make pkg-config libarchive-devel \
+            libopenssl-devel shellcheck git
+      - name: clone
+        run: |
+          git init /src
+          cd /src
+          git remote add origin "https://github.com/${{ github.repository }}"
+          git fetch --depth 1 origin "${{ github.sha }}"
+          git checkout FETCH_HEAD
+      - name: build
+        run: make -C /src
+      - name: lint scripts
+        run: shellcheck /src/tools/mkrootfs.sh
+      - name: smoke test supervisor
+        run: |
+          mkdir -p /tmp/svtest/svc
+          printf '#!/bin/sh\nexec sleep 30\n' > /tmp/svtest/svc/run
+          chmod +x /tmp/svtest/svc/run
+          PATH="/src/niinit/bin:$PATH" niinit-sv /tmp/svtest/svc &
+          sleep 1
+          test "$(cat /tmp/svtest/svc/stat)" = up
+          NIINIT_SVDIR=/tmp/svtest /src/niinit/bin/svctl down svc
+          sleep 1
+          test "$(cat /tmp/svtest/svc/stat)" = down
+          NIINIT_SVDIR=/tmp/svtest /src/niinit/bin/svctl up svc
+          sleep 1
+          test "$(cat /tmp/svtest/svc/stat)" = up
+
+  rootfs:
+    name: rootfs smoke test
+    runs-on: ubuntu-latest
+    container: voidlinux/voidlinux
+    steps:
+      - name: install toolchain
+        run: |
+          xbps-install -Syu xbps
+          xbps-install -y gcc make pkg-config libarchive-devel \
+            libopenssl-devel git
+      - name: clone
+        run: |
+          git init /src
+          cd /src
+          git remote add origin "https://github.com/${{ github.repository }}"
+          git fetch --depth 1 origin "${{ github.sha }}"
+          git checkout FETCH_HEAD
+      - name: build
+        run: make -C /src
+      - name: build rootfs
+        run: /src/tools/mkrootfs.sh /tmp/rootfs
+      - name: verify rootfs
+        run: |
+          test -x /tmp/rootfs/sbin/niinit
+          test -x /tmp/rootfs/sbin/niinit-sv
+          test -x /tmp/rootfs/sbin/niinit-svdir
+          test -x /tmp/rootfs/usr/bin/kipki
+          test -L /tmp/rootfs/usr/bin/reboot
+          test -f /tmp/rootfs/usr/share/kinini/kiwi.txt
+          test -f /tmp/rootfs/etc/xdg/fastfetch/config.jsonc
+          grep -q 'PRETTY_NAME="KiniNi Linux' /tmp/rootfs/etc/os-release
+          grep -q '^kinini$' /tmp/rootfs/etc/hostname
+          test -x /tmp/rootfs/etc/niinit/1
+          test -x /tmp/rootfs/etc/niinit/3
+          test -x /tmp/rootfs/etc/niinit/services/getty-tty6/run

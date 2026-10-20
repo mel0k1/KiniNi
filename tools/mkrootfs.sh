@@ -35,7 +35,8 @@ install -Dm644 "$SRC"/kipki/skel/kipki.conf "$TARGET"/etc/kipki/kipki.conf
 
 if command -v chroot >/dev/null && [ -x "$TARGET/usr/sbin/chpasswd" ]; then
 	echo "root:kinini" | chroot "$TARGET" chpasswd 2>/dev/null \
-		&& echo "mkrootfs: root password set to 'kinini' (change it)"
+		&& echo "mkrootfs: root password set to 'kinini' (change it)" \
+		|| true
 fi
 
 echo "mkrootfs: KiniNi rootfs ready at $TARGET"
