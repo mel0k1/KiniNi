@@ -1,0 +1,15 @@
+#!/bin/sh
+mountpoint -q /proc  || mount -t proc proc /proc
+mountpoint -q /sys   || mount -t sysfs sys /sys
+mountpoint -q /dev   || mount -t devtmpfs dev /dev
+mkdir -p /dev/pts /dev/shm /run /tmp
+chmod 1777 /tmp
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
+mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm
+mountpoint -q /run     || mount -t tmpfs run /run
+[ -x /usr/bin/udevd ] && udevd --daemon
+swapon -a 2>/dev/null
+hostname -F /etc/hostname 2>/dev/null
+ip link set up dev lo 2>/dev/null
+[ -f /etc/random-seed ] && cat /etc/random-seed > /dev/urandom
+exit 0

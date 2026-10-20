@@ -1,0 +1,5 @@
+#!/bin/sh
+swapoff -a 2>/dev/null
+umount -a -r -t nosysfs,noproc,nodevtmpfs,notmpfs 2>/dev/null
+sync
+exit 0
