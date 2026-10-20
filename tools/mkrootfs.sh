@@ -17,6 +17,8 @@ REPO=${2:-https://repo-default.voidlinux.org/current}
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 
 mkdir -p "$TARGET/var/db/xbps" "$TARGET/var/cache/xbps" "$TARGET/etc"
+mkdir -p "$TARGET/var/db/xbps/keys"
+install -m644 "$SRC"/tools/keys/*.plist "$TARGET/var/db/xbps/keys/"
 
 xbps-install -y -S -R "$REPO" -r "$TARGET" base-system
 
