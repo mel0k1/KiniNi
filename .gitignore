@@ -1,0 +1,5 @@
+bin/
+*.o
+rootfs/
+out/
+*.tar.*
