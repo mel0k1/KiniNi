@@ -16,7 +16,8 @@ jobs:
           mkdir -p /etc/xbps.d
           printf 'repository=https://repo-default.voidlinux.org/current\n' \
             > /etc/xbps.d/00-repository-main.conf
-          xbps-install -Syu
+          xbps-install -y -u xbps
+          xbps-install -y -u
           xbps-install -y gcc make pkg-config libarchive-devel \
             openssl-devel shellcheck git
       - name: clone
@@ -55,7 +56,8 @@ jobs:
           mkdir -p /etc/xbps.d
           printf 'repository=https://repo-default.voidlinux.org/current\n' \
             > /etc/xbps.d/00-repository-main.conf
-          xbps-install -Syu
+          xbps-install -y -u xbps
+          xbps-install -y -u
           xbps-install -y gcc make pkg-config libarchive-devel \
             openssl-devel git
       - name: clone
