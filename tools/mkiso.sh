@@ -2,13 +2,20 @@
 # build a bootable KiniNi live iso from a rootfs
 # usage: mkiso.sh <rootdir> <output.iso>
 #
+# the iso boots on BIOS (isolinux) and, when the grub efi toolchain is
+# present, on UEFI (standalone grub x86_64-efi on an appended FAT ESP,
+# grub-mkrescue-style hybrid). both boot the same kernel/initramfs.
+#
 # env overrides:
 #   BUSYBOX       static busybox for the initramfs
 #   SYSLINUX_DIR  directory with isolinux.bin, isohdpfx.bin, ldlinux.c32
-#   ISOHYBRID     isohybrid binary (optional, usb hybrid boot)
+#   ISOHYBRID     isohybrid binary (optional, usb hybrid boot, bios-only iso)
 #   MKISO         genisoimage/mkisofs/xorriso (auto-detected)
 #   CPIO          cpio command (auto-detected)
 #   ISOVOLUME     volume label (default KININI_LIVE)
+#   GRUB_MKIMAGE  grub-mkimage binary (auto-detected)
+#   GRUB_EFI_DIR  dir with x86_64-efi modules (default /usr/lib/grub/x86_64-efi)
+#   MKFS_VFAT     mkfs.vfat binary (auto-detected)
 set -eu
 
 usage() {
@@ -88,6 +95,36 @@ LDLINUX=$(find_syslinux_file ldlinux.c32) || die "ldlinux.c32 not found (set SYS
 ISOHDPFX=$(find_syslinux_file isohdpfx.bin || true)
 ISOHYBRID=${ISOHYBRID:-$(command -v isohybrid 2>/dev/null || true)}
 
+# ---------------------------------------------------------------- uefi
+# UEFI boot needs: grub-mkimage + x86_64-efi modules, mkfs.vfat and
+# mtools (mmd/mcopy) to populate the FAT ESP image without root.
+GRUB_MKIMAGE=${GRUB_MKIMAGE:-$(command -v grub-mkimage 2>/dev/null || true)}
+GRUB_EFI_DIR=${GRUB_EFI_DIR:-}
+if [ -z "$GRUB_EFI_DIR" ]; then
+        for d in /usr/lib/grub/x86_64-efi /usr/share/grub/x86_64-efi; do
+                [ -d "$d" ] && { GRUB_EFI_DIR=$d; break; }
+        done
+fi
+MKFS_VFAT=${MKFS_VFAT:-$(command -v mkfs.vfat 2>/dev/null || command -v mkfs.fat 2>/dev/null || true)}
+UEFI=0
+if [ -n "$GRUB_MKIMAGE" ] && [ -n "$GRUB_EFI_DIR" ] && [ -n "$MKFS_VFAT" ] \
+        && have mmd && have mcopy; then
+        UEFI=1
+        echo "mkiso: UEFI boot enabled (grub x86_64-efi from $GRUB_EFI_DIR)"
+else
+        echo "mkiso: warning: UEFI boot disabled (need grub-mkimage," >&2
+        echo "mkiso:          /usr/lib/grub/x86_64-efi, mkfs.vfat and mtools)" >&2
+fi
+# the disk installer re-uses the standalone EFI binary offline
+if [ "$UEFI" = 1 ]; then
+        if [ -x "$ROOT/usr/sbin/mkfs.vfat" ] || [ -x "$ROOT/usr/bin/mkfs.vfat" ]; then
+                :
+        else
+                echo "mkiso: warning: dosfstools missing from the rootfs:" >&2
+                echo "mkiso:          kiwi-install will not be able to format an ESP" >&2
+        fi
+fi
+
 # ---------------------------------------------------------------- kernel
 KVER=$(find "$ROOT/usr/lib/modules" -mindepth 1 -maxdepth 1 -type d \
         -printf '%f\n' 2>/dev/null | head -n 1)
@@ -114,7 +151,7 @@ rm -rf "$ISOT/rootfs/var/cache/xbps/"* 2>/dev/null || true
 rm -f "$ISOT/rootfs"/boot/vmlinuz-* 2>/dev/null || true
 
 # live-only tweaks: autologin on tty1, fastfetch on login, serial console,
-# root password, /sbin/init
+# root password, /sbin/init, DHCP client on
 sed -i 's/--noclear //' "$ISOT/rootfs/etc/niinit/services/getty-tty1/run" 2>/dev/null || true
 sed -i 's/exec agetty/exec agetty -a root/' \
         "$ISOT/rootfs/etc/niinit/services/getty-tty1/run" 2>/dev/null || true
@@ -122,7 +159,17 @@ mkdir -p "$ISOT/rootfs/etc/niinit/services/getty-ttyS0"
 printf '#!/bin/sh\nexec agetty -a root -L ttyS0 115200 vt100\n' \
         > "$ISOT/rootfs/etc/niinit/services/getty-ttyS0/run"
 chmod +x "$ISOT/rootfs/etc/niinit/services/getty-ttyS0/run"
+# enable DHCP on the live system (network for kipki out of the box);
+# the installed system chooses during kiwi-install
+if [ -d "$ISOT/rootfs/etc/niinit/services-available/dhcpcd" ]; then
+        ln -sfn /etc/niinit/services-available/dhcpcd \
+                "$ISOT/rootfs/etc/niinit/services/dhcpcd"
+fi
 ln -sf niinit "$ISOT/rootfs/sbin/init"
+
+# marker consumed by the grub EFI binary (search --file /.kinini-live):
+# finds the right filesystem on cd, usb hybrid and installed-disk boots
+: > "$ISOT/.kinini-live"
 
 # generate /etc/shadow if the install hooks did not create it
 if [ ! -f "$ISOT/rootfs/etc/shadow" ]; then
@@ -382,6 +429,64 @@ echo "mkiso: packing disk initramfs"
 (cd "$DINITRD" && find . | LC_ALL=C sort | $CPIO | $GZIP -9) \
         > "$WORK/initramfs-disk.img"
 
+# ---------------------------------------------------------------- uefi image
+# a standalone grub x86_64-efi: the early config locates the filesystem
+# holding /.kinini-live (cd iso9660, usb hybrid or installed ext4) and
+# chains /boot/grub/grub.cfg from it. embedded in the ESP image for
+# el torito (-e) and appended-partition (USB) boots, and shipped inside
+# the live rootfs for the offline UEFI path of kiwi-install.
+if [ "$UEFI" = 1 ]; then
+        echo "mkiso: building grub x86_64-efi standalone image"
+        cat > "$WORK/early.cfg" <<'EOF'
+search --file --set=root /.kinini-live
+set prefix=($root)/boot/grub
+normal
+EOF
+        if ! "$GRUB_MKIMAGE" -O x86_64-efi -d "$GRUB_EFI_DIR" \
+                -o "$WORK/BOOTX64.EFI" -c "$WORK/early.cfg" \
+                boot configfile echo ext2 fat iso9660 gzio linux ls normal \
+                part_gpt part_msdos search search_fs_file search_fs_uuid \
+                search_label sleep test efi_gop; then
+                echo "mkiso: warning: grub-mkimage failed, building BIOS-only" >&2
+                UEFI=0
+        fi
+fi
+
+if [ "$UEFI" = 1 ]; then
+        echo "mkiso: building efiboot.img (ESP)"
+        rm -f "$WORK/efiboot.img"
+        if ! "$MKFS_VFAT" -C -n KININI_EFI "$WORK/efiboot.img" 16384 \
+                >/dev/null 2>&1; then
+                echo "mkiso: warning: mkfs.vfat failed, building BIOS-only" >&2
+                UEFI=0
+        fi
+fi
+
+if [ "$UEFI" = 1 ]; then
+        if mmd -i "$WORK/efiboot.img" ::/EFI ::/EFI/BOOT \
+                && mcopy -i "$WORK/efiboot.img" "$WORK/BOOTX64.EFI" \
+                        ::/EFI/BOOT/BOOTX64.EFI; then
+                mkdir -p "$ISOT/boot/grub"
+                cat > "$ISOT/boot/grub/grub.cfg" <<'EOF'
+set timeout=5
+set default=0
+
+menuentry "KiniNi Linux live" {
+        linux /boot/vmlinuz init=/sbin/niinit console=tty0 console=ttyS0,115200n8 loglevel=4
+        initrd /boot/initramfs.img
+}
+
+menuentry "KiniNi Linux live (rescue shell)" {
+        linux /boot/vmlinuz init=/bin/sh console=tty0 console=ttyS0,115200n8
+        initrd /boot/initramfs.img
+}
+EOF
+        else
+                echo "mkiso: warning: cannot populate efiboot.img, building BIOS-only" >&2
+                UEFI=0
+        fi
+fi
+
 # ---------------------------------------------------------------- bootloader
 install -m644 "$KIMG" "$ISOT/boot/vmlinuz"
 install -m644 "$ISOLINUX_BIN" "$ISOT/boot/isolinux/isolinux.bin"
@@ -393,6 +498,8 @@ mkdir -p "$ISOT/rootfs/usr/lib/kinini" "$ISOT/rootfs/usr/sbin"
 install -m644 "$KIMG" "$ISOT/rootfs/usr/lib/kinini/vmlinuz"
 install -m644 "$WORK/initramfs-disk.img" \
         "$ISOT/rootfs/usr/lib/kinini/initramfs-disk.img"
+[ "$UEFI" = 1 ] && install -m755 "$WORK/BOOTX64.EFI" \
+        "$ISOT/rootfs/usr/lib/kinini/BOOTX64.EFI"
 INSTALLER=$(dirname "$0")/kiwi-install
 [ -f "$INSTALLER" ] || die "kiwi-install not found next to mkiso.sh"
 install -m755 "$INSTALLER" "$ISOT/rootfs/usr/sbin/kiwi-install"
@@ -424,28 +531,48 @@ if [ -f "$KCFG" ] && grep -q '^CONFIG_ZISOFS=y' "$KCFG" \
 fi
 
 echo "mkiso: building $OUT"
-case "$MKISO" in
-xorriso)
+if [ "$UEFI" = 1 ]; then
+        # grub-mkrescue-style BIOS+UEFI hybrid: isolinux el torito for the
+        # BIOS, the appended FAT ESP as the second el torito entry for UEFI
+        # and as GPT partition 2 for USB boots; isohdpfx MBR covers BIOS USB.
+        [ "$MKISO" = "xorriso" ] \
+                || die "UEFI boot requires xorriso (set MKISO=xorriso)"
+        [ -n "$ISOHDPFX" ] \
+                || die "isohdpfx.bin not found (needed for the hybrid BIOS+UEFI layout)"
         # shellcheck disable=SC2086
         xorriso -as mkisofs $ZOPT -R -J -joliet-long -V "$VOL" \
+                -isohybrid-mbr "$ISOHDPFX" \
                 -b boot/isolinux/isolinux.bin -c boot/isolinux/boot.cat \
                 -no-emul-boot -boot-load-size 4 -boot-info-table \
+                -eltorito-alt-boot \
+                -e '--interval:appended_partition_2:::' -no-emul-boot \
+                -isohybrid-gpt-bapadera \
+                -append_partition 2 0xef "$WORK/efiboot.img" \
                 -o "$OUT" "$ISOT"
-        ;;
-*)
-        # shellcheck disable=SC2086
-        "$MKISO" $ZOPT -R -J -joliet-long -V "$VOL" \
-                -b boot/isolinux/isolinux.bin -c boot/isolinux/boot.cat \
-                -no-emul-boot -boot-load-size 4 -boot-info-table \
-                -o "$OUT" "$ISOT"
-        ;;
-esac
-
-if [ -n "$ISOHYBRID" ] && [ -n "$ISOHDPFX" ]; then
-        echo "mkiso: making iso hybrid"
-        "$ISOHYBRID" "$OUT" || echo "mkiso: warning: isohybrid failed (cd boot still works)" >&2
 else
-        echo "mkiso: isohybrid not available, el torito cd boot only"
+        case "$MKISO" in
+        xorriso)
+                # shellcheck disable=SC2086
+                xorriso -as mkisofs $ZOPT -R -J -joliet-long -V "$VOL" \
+                        -b boot/isolinux/isolinux.bin -c boot/isolinux/boot.cat \
+                        -no-emul-boot -boot-load-size 4 -boot-info-table \
+                        -o "$OUT" "$ISOT"
+                ;;
+        *)
+                # shellcheck disable=SC2086
+                "$MKISO" $ZOPT -R -J -joliet-long -V "$VOL" \
+                        -b boot/isolinux/isolinux.bin -c boot/isolinux/boot.cat \
+                        -no-emul-boot -boot-load-size 4 -boot-info-table \
+                        -o "$OUT" "$ISOT"
+                ;;
+        esac
+
+        if [ -n "$ISOHYBRID" ] && [ -n "$ISOHDPFX" ]; then
+                echo "mkiso: making iso hybrid"
+                "$ISOHYBRID" "$OUT" || echo "mkiso: warning: isohybrid failed (cd boot still works)" >&2
+        else
+                echo "mkiso: isohybrid not available, el torito cd boot only"
+        fi
 fi
 
 echo "mkiso: done: $OUT ($(du -h "$OUT" | cut -f1))"
