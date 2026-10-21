@@ -1,0 +1,202 @@
+#!/bin/sh
+# kiwi-install - install KiniNi from the live system to a disk
+#
+# usage: kiwi-install [-d /dev/sdX] [-y] [-h]
+#
+#   -d DISK   target disk, e.g. /dev/sda (interactive picker if omitted)
+#   -y        no questions: single root partition, default root password
+#             ("kinini"), extlinux (BIOS) bootloader
+#
+# the installer copies the running live system to a fresh ext4 partition,
+# un-applies live-only tweaks, writes /etc/fstab and installs an offline
+# extlinux (BIOS) bootloader from the syslinux package shipped in the live
+# image. requires: sfdisk, mkfs.ext4, blkid, tar, extlinux.
+set -eu
+
+TARGET=/mnt/kinini
+DEFROOTPW=kinini
+
+die() {
+        echo "kiwi-install: $*" >&2
+        exit 1
+}
+
+have() {
+        command -v "$1" >/dev/null 2>&1
+}
+
+msg() {
+        echo "kiwi-install: $*"
+}
+
+ask() {
+        # ask "question" default(y|n)
+        a=$2
+        printf '%s [%s] ' "$1" "$a"
+        read -r ans
+        [ -n "$ans" ] || ans=$a
+        case "$ans" in
+        [Yy]*)  return 0 ;;
+        *)      return 1 ;;
+        esac
+}
+
+usage() {
+        echo "usage: kiwi-install [-d /dev/sdX] [-y] [-h]" >&2
+        exit 1
+}
+
+DISK=
+YES=0
+while getopts d:yh c; do
+        case $c in
+        d)      DISK=$OPTARG ;;
+        y)      YES=1 ;;
+        *)      usage ;;
+        esac
+done
+
+[ "$(id -u)" = 0 ] || die "must run as root"
+for t in sfdisk mkfs.ext4 blkid tar extlinux dd; do
+        have "$t" || die "$t not found"
+done
+[ -f /usr/lib/kinini/initramfs-disk.img ] \
+        || die "/usr/lib/kinini/initramfs-disk.img not found (live iso only)"
+
+# ---------------------------------------------------------------- disk pick
+if [ -z "$DISK" ]; then
+        msg "available disks:"
+        for d in /sys/block/*; do
+                b=${d#/sys/block/}
+                case "$b" in
+                loop*|ram*|sr*|fd*|zram*|dm-*) continue ;;
+                esac
+                [ -f "$d/size" ] || continue
+                [ -b "/dev/$b" ] || continue
+                sz=$(( $(cat "$d/size") * 512 / 1024 / 1024 ))
+                printf '  /dev/%-8s %5d MB\n' "$b" "$sz"
+        done
+        printf 'target disk: '
+        read -r DISK
+        [ -n "$DISK" ] || die "no disk given"
+fi
+
+case "$DISK" in
+/dev/*) ;;
+*)      DISK="/dev/$DISK" ;;
+esac
+[ -b "$DISK" ] || die "$DISK is not a block device"
+
+sz=$(( $(cat "/sys/block/${DISK#/dev/}/size") * 512 / 1024 / 1024 ))
+if [ "$YES" = 0 ]; then
+        echo
+        echo "  WARNING: everything on $DISK (${sz} MB) will be destroyed."
+        echo "  A single ext4 root partition with extlinux (BIOS) is created."
+        echo
+        ask "proceed?" n || die "aborted"
+fi
+
+# ---------------------------------------------------------------- partition
+msg "partitioning $DISK"
+sfdisk -q "$DISK" <<'EOF'
+label: dos
+type=83, bootable
+EOF
+
+blockdev --rereadpt "$DISK" 2>/dev/null || true
+sleep 1
+case "$DISK" in
+*nvme*|*mmcblk*)        PART=${DISK}p1 ;;
+*)                      PART=${DISK}1 ;;
+esac
+[ -b "$PART" ] || die "partition $PART did not appear"
+
+msg "creating ext4 on $PART"
+# syslinux 6.03 cannot read fs with 64bit/metadata_csum/orphan_file,
+# keep the feature set conservative for the bootloader
+mkfs.ext4 -q -F -O ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file \
+        -L kinini "$PART"
+
+# ---------------------------------------------------------------- copy root
+mkdir -p "$TARGET"
+mountpoint -q "$TARGET" && die "$TARGET already mounted"
+mount -t ext4 "$PART" "$TARGET"
+
+msg "copying live system to $TARGET (this may take a while)"
+tar -C / --one-file-system --numeric-owner -cf - . | tar -C "$TARGET" -xf -
+
+# ------------------------------------------------------- un-live the target
+msg "restoring standard gettys (no autologin)"
+for t in 1 2 3 4 5 6; do
+        f="$TARGET/etc/niinit/services/getty-tty$t/run"
+        [ -f "$f" ] || continue
+        sed -i -e 's/agetty -a root/agetty/' "$f"
+done
+sed -i -e 's/exec agetty -L tty1/exec agetty --noclear -L tty1/' \
+        "$TARGET/etc/niinit/services/getty-tty1/run" 2>/dev/null || true
+f="$TARGET/etc/niinit/services/getty-ttyS0/run"
+[ -f "$f" ] && sed -i -e 's/agetty -a root/agetty/' "$f"
+
+msg "removing live-only init tweaks"
+sed -i '/^for f in \/var\/db\/xbps\/pkgdb-\*\.plist; do$/,/^exit 0$/d' \
+        "$TARGET/etc/niinit/1"
+grep -q '^exit 0$' "$TARGET/etc/niinit/1" || echo 'exit 0' \
+        >> "$TARGET/etc/niinit/1"
+
+# ---------------------------------------------------------------- fstab
+UUID=$(blkid -s UUID -o value "$PART")
+[ -n "$UUID" ] || die "cannot read uuid of $PART"
+cat > "$TARGET/etc/fstab" <<EOF
+UUID=$UUID  /       ext4    defaults        0 1
+tmpfs       /tmp    tmpfs   defaults,nosuid 0 0
+EOF
+
+# ---------------------------------------------------------------- password
+if [ "$YES" = 0 ] && ask "set root password now?" y; then
+        chroot "$TARGET" /usr/bin/passwd root
+else
+        msg "keeping default root password ($DEFROOTPW) - change it!"
+fi
+
+# ---------------------------------------------------------------- bootloader
+for t in extlinux mbr.bin ldlinux.c32; do
+        case $t in
+        extlinux)       sl=/usr/bin/extlinux ;;
+        mbr.bin)        sl=/usr/lib/syslinux/mbr.bin ;;
+        ldlinux.c32)    sl=/usr/lib/syslinux/ldlinux.c32 ;;
+        esac
+        [ -f "$sl" ] || die "$sl not found (syslinux package missing from the live image)"
+done
+
+mkdir -p "$TARGET/boot/extlinux"
+KVER=$(uname -r)
+msg "installing kernel $KVER and initramfs into the target"
+cp /usr/lib/kinini/vmlinuz "$TARGET/boot/vmlinuz-$KVER"
+chmod 644 "$TARGET/boot/vmlinuz-$KVER"
+cp /usr/lib/kinini/initramfs-disk.img "$TARGET/boot/initramfs.img"
+
+cat > "$TARGET/boot/extlinux/extlinux.conf" <<EOF
+DEFAULT kinini
+PROMPT 0
+TIMEOUT 30
+
+LABEL kinini
+        KERNEL /boot/vmlinuz-$(uname -r)
+        INITRD /boot/initramfs.img
+        APPEND root=UUID=$UUID rw console=tty0 console=ttyS0,115200n8 loglevel=4
+EOF
+
+msg "writing extlinux boot sector"
+/usr/bin/extlinux --install "$TARGET/boot/extlinux"
+install -m644 /usr/lib/syslinux/ldlinux.c32 "$TARGET/boot/extlinux/ldlinux.c32"
+dd if=/usr/lib/syslinux/mbr.bin of="$DISK" bs=440 count=1 \
+        conv=notrunc status=none
+
+msg "unmounting"
+cd /
+umount "$TARGET"
+sync
+
+echo
+msg "done: KiniNi installed on $PART (UUID $UUID)"
+msg "reboot and remove the live medium to boot from disk"

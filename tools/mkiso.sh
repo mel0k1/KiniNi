@@ -76,7 +76,8 @@ have zstd || ZSTD=""
 find_syslinux_file() {
         _f=$1
         for d in ${SYSLINUX_DIR:-} /usr/lib/ISOLINUX /usr/lib/syslinux/bios \
-            /usr/lib/syslinux /usr/share/syslinux; do
+            /usr/lib/syslinux/modules/bios /usr/lib/syslinux \
+            /usr/share/syslinux; do
                 [ -n "$d" ] && [ -f "$d/$_f" ] && { echo "$d/$_f"; return 0; }
         done
         return 1
@@ -96,6 +97,12 @@ KIMG=$ROOT/boot/vmlinuz-$KVER
 KCFG=$ROOT/boot/config-$KVER
 echo "mkiso: kernel $KVER"
 echo "mkiso: toolchain $MKISO + isolinux from $(dirname "$ISOLINUX_BIN")"
+
+# the disk installer needs these at runtime
+for f in "$ROOT/usr/bin/extlinux" "$ROOT/usr/lib/syslinux/mbr.bin" \
+        "$ROOT/usr/lib/syslinux/ldlinux.c32"; do
+        [ -f "$f" ] || die "$f missing - add 'syslinux' to the rootfs packages"
+done
 
 # ---------------------------------------------------------------- iso tree
 ISOT=$WORK/iso
@@ -185,24 +192,39 @@ chmod 755 "$INITRD/bin/busybox"
 echo "mkiso: copying modules for initramfs"
 MODDIR=$ROOT/usr/lib/modules/$KVER
 # insmod order matters: dependencies first
-for m in nls_cp437 nls_ascii \
+LIVEMODS="nls_cp437 nls_ascii \
         scsi_common scsi_mod sd_mod cdrom sr_mod \
         libata libahci ahci ata_piix \
         virtio_ring virtio virtio_blk virtio_pci_legacy_dev virtio_pci_modern_dev virtio_pci \
         usb-common usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci uhci-hcd usb-storage uas \
         isofs overlay \
-        agpgart drm drm_kms_helper ttm drm_ttm_helper drm_vram_helper bochs; do
-        f=$(find "$MODDIR/kernel" -name "$m.ko*" 2>/dev/null | head -n 1)
-        [ -n "$f" ] || continue
-        case "$f" in
-        *.zst)
-                if [ -n "$ZSTD" ]; then
-                        $ZSTD -d -c "$f" > "$INITRD/modules/$m.ko"
-                fi
-                ;;
-        *)      cp "$f" "$INITRD/modules/$m.ko" ;;
-        esac
-done
+        agpgart drm drm_kms_helper ttm drm_ttm_helper drm_vram_helper bochs"
+# disk boot: storage chain + ext4 stack, no cd/drm
+DISKMODS="scsi_common scsi_mod sd_mod \
+        libata libahci ahci ata_piix \
+        virtio_ring virtio virtio_blk virtio_pci_legacy_dev virtio_pci_modern_dev virtio_pci \
+        usb-common usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci uhci-hcd usb-storage uas \
+        crc16 crc32c_generic crc32c_intel mbcache jbd2 ext4"
+
+copy_modules() {
+        _dst=$1
+        shift
+        for m in "$@"; do
+                f=$(find "$MODDIR/kernel" -name "$m.ko*" 2>/dev/null | head -n 1)
+                [ -n "$f" ] || continue
+                case "$f" in
+                *.zst)
+                        if [ -n "$ZSTD" ]; then
+                                $ZSTD -d -c "$f" > "$_dst/$m.ko"
+                        fi
+                        ;;
+                *)      cp "$f" "$_dst/$m.ko" ;;
+                esac
+        done
+}
+
+mkdir -p "$INITRD/modules"
+copy_modules "$INITRD/modules" $LIVEMODS
 NMOD=$(find "$INITRD/modules" -type f 2>/dev/null | wc -l)
 echo "mkiso: initramfs modules: $NMOD"
 
@@ -265,10 +287,113 @@ chmod +x "$INITRD/init"
 echo "mkiso: packing initramfs"
 (cd "$INITRD" && find . | LC_ALL=C sort | $CPIO | $GZIP -9) > "$ISOT/boot/initramfs.img"
 
+# ------------------------------------------------------- disk initramfs
+# a second, smaller initramfs for the disk installer: mounts root=UUID=...
+DINITRD=$WORK/initramfs-disk
+mkdir -p "$DINITRD/bin" "$DINITRD/modules" "$DINITRD/newroot" "$DINITRD/proc" \
+        "$DINITRD/sys" "$DINITRD/dev"
+cp "$BUSYBOX" "$DINITRD/bin/busybox"
+chmod 755 "$DINITRD/bin/busybox"
+copy_modules "$DINITRD/modules" $DISKMODS
+DMOD=$(find "$DINITRD/modules" -type f 2>/dev/null | wc -l)
+echo "mkiso: disk initramfs modules: $DMOD"
+
+cat > "$DINITRD/init" <<'EOF'
+#!/bin/busybox sh
+BB=/bin/busybox
+$BB mkdir -p /proc /sys /dev /newroot
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sysfs /sys
+$BB mount -t devtmpfs devtmpfs /dev 2>/dev/null || $BB mdev -s
+
+for m in scsi_common scsi_mod sd_mod \
+        libata libahci ahci ata_piix \
+        virtio_ring virtio virtio_blk virtio_pci_legacy_dev virtio_pci_modern_dev virtio_pci \
+        usb-common usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci uhci-hcd usb-storage uas \
+        crc16 crc32c_generic crc32c_intel mbcache jbd2 ext4; do
+        [ -f /modules/$m.ko ] && $BB insmod /modules/$m.ko 2>/dev/null
+done
+
+ROOT=
+for o in $(cat /proc/cmdline); do
+        case "$o" in
+        root=*) ROOT=${o#root=} ;;
+        esac
+done
+
+[ -n "$ROOT" ] || {
+        echo "init: no root= on the command line, dropping to shell"
+        exec $BB sh
+}
+
+ROOTDEV=
+if [ "${ROOT#UUID=}" != "$ROOT" ]; then
+        want=${ROOT#UUID=}
+        n=0
+        while [ $n -lt 30 ]; do
+                # blkid applet may be absent (stripped busybox builds):
+                # fall back to probe-mounting candidate devices
+                ROOTDEV=$($BB blkid -U "$want" 2>/dev/null)
+                [ -n "$ROOTDEV" ] && break
+                for d in $($BB sh -c 'echo /dev/sd*[0-9] /dev/vd*[0-9] \
+                        /dev/hd*[0-9] /dev/nvme*n*p*[0-9]' 2>/dev/null); do
+                        [ -b "$d" ] || continue
+                        if $BB mount -t ext4 -o ro "$d" /newroot \
+                                2>/dev/null; then
+                                if [ -x /newroot/sbin/init ]; then
+                                        ROOTDEV=$d
+                                        $BB umount /newroot
+                                        break
+                                fi
+                                $BB umount /newroot
+                        fi
+                done
+                [ -n "$ROOTDEV" ] && break
+                $BB sleep 0.5
+                n=$((n + 1))
+        done
+else
+        ROOTDEV=$ROOT
+fi
+
+[ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ] || {
+        echo "init: root device $ROOT not found, dropping to shell"
+        exec $BB sh
+}
+
+echo "init: mounting root $ROOTDEV"
+$BB mount -o rw "$ROOTDEV" /newroot || {
+        echo "init: mount root failed, dropping to shell"
+        exec $BB sh
+}
+
+$BB mount --move /proc /newroot/proc
+$BB mount --move /sys /newroot/sys
+$BB mount --move /dev /newroot/dev
+exec $BB switch_root /newroot /sbin/init
+echo "init: switch_root failed, dropping to shell"
+exec $BB sh
+EOF
+chmod +x "$DINITRD/init"
+
+echo "mkiso: packing disk initramfs"
+(cd "$DINITRD" && find . | LC_ALL=C sort | $CPIO | $GZIP -9) \
+        > "$WORK/initramfs-disk.img"
+
 # ---------------------------------------------------------------- bootloader
 install -m644 "$KIMG" "$ISOT/boot/vmlinuz"
 install -m644 "$ISOLINUX_BIN" "$ISOT/boot/isolinux/isolinux.bin"
 install -m644 "$LDLINUX" "$ISOT/boot/isolinux/ldlinux.c32"
+
+# ship the installer artifacts inside the live rootfs
+# (the kernel is kept for the disk installer: rootfs /boot is pruned)
+mkdir -p "$ISOT/rootfs/usr/lib/kinini" "$ISOT/rootfs/usr/sbin"
+install -m644 "$KIMG" "$ISOT/rootfs/usr/lib/kinini/vmlinuz"
+install -m644 "$WORK/initramfs-disk.img" \
+        "$ISOT/rootfs/usr/lib/kinini/initramfs-disk.img"
+INSTALLER=$(dirname "$0")/kiwi-install
+[ -f "$INSTALLER" ] || die "kiwi-install not found next to mkiso.sh"
+install -m755 "$INSTALLER" "$ISOT/rootfs/usr/sbin/kiwi-install"
 
 cat > "$ISOT/boot/isolinux/isolinux.cfg" <<'EOF'
 SERIAL 0 115200
