@@ -224,6 +224,7 @@ copy_modules() {
 }
 
 mkdir -p "$INITRD/modules"
+# shellcheck disable=SC2086
 copy_modules "$INITRD/modules" $LIVEMODS
 NMOD=$(find "$INITRD/modules" -type f 2>/dev/null | wc -l)
 echo "mkiso: initramfs modules: $NMOD"
@@ -294,6 +295,7 @@ mkdir -p "$DINITRD/bin" "$DINITRD/modules" "$DINITRD/newroot" "$DINITRD/proc" \
         "$DINITRD/sys" "$DINITRD/dev"
 cp "$BUSYBOX" "$DINITRD/bin/busybox"
 chmod 755 "$DINITRD/bin/busybox"
+# shellcheck disable=SC2086
 copy_modules "$DINITRD/modules" $DISKMODS
 DMOD=$(find "$DINITRD/modules" -type f 2>/dev/null | wc -l)
 echo "mkiso: disk initramfs modules: $DMOD"
