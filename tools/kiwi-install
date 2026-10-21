@@ -1,20 +1,34 @@
 #!/bin/sh
 # kiwi-install - install KiniNi from the live system to a disk
 #
-# usage: kiwi-install [-d /dev/sdX] [-y] [-h]
+# usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-N] [-y] [-h]
 #
-#   -d DISK   target disk, e.g. /dev/sda (interactive picker if omitted)
-#   -y        no questions: single root partition, default root password
-#             ("kinini"), extlinux (BIOS) bootloader
+#   -d DISK    target disk, e.g. /dev/sda (interactive picker if omitted)
+#   -b MODE    partition layout and bootloader:
+#                bios  msdos label + offline extlinux (syslinux mbr)
+#                uefi  gpt label + 512 MiB ESP with the standalone grub
+#                      x86_64-efi binary at \EFI\BOOT\BOOTX64.EFI (the
+#                      removable-drive fallback path: boots everywhere,
+#                      no NVRAM entries required)
+#              default: autodetect (uefi when booted with efivars)
+#   -s SWAPMB  swap partition size in MiB (default: min(2*RAM, 4096);
+#              0 disables the swap partition). zram swap is configured
+#              regardless (see /etc/kinini/zram.conf).
+#   -N         do not enable the DHCP client (dhcpcd) service
+#   -y         no questions: autodetected bootloader mode, default root
+#              password ("kinini"), DHCP on, swap as given
 #
 # the installer copies the running live system to a fresh ext4 partition,
 # un-applies live-only tweaks, writes /etc/fstab and installs an offline
-# extlinux (BIOS) bootloader from the syslinux package shipped in the live
-# image. requires: sfdisk, mkfs.ext4, blkid, tar, extlinux.
+# bootloader shipped inside the ISO. everything runs from the live image,
+# no network is needed.
+# requires: sfdisk, mkfs.ext4, blkid, tar, dd; bios: extlinux + syslinux
+# mbr/ldlinux; uefi: mkfs.vfat + /usr/lib/kinini/BOOTX64.EFI.
 set -eu
 
 TARGET=/mnt/kinini
 DEFROOTPW=kinini
+ESP_MIB=512
 
 die() {
         echo "kiwi-install: $*" >&2
@@ -42,26 +56,72 @@ ask() {
 }
 
 usage() {
-        echo "usage: kiwi-install [-d /dev/sdX] [-y] [-h]" >&2
+        echo "usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-N] [-y] [-h]" >&2
         exit 1
 }
 
 DISK=
 YES=0
-while getopts d:yh c; do
+NODHCP=0
+MODE=
+SWAP=
+while getopts d:b:s:Nyh c; do
         case $c in
         d)      DISK=$OPTARG ;;
+        b)      MODE=$OPTARG ;;
+        s)      SWAP=$OPTARG ;;
+        N)      NODHCP=1 ;;
         y)      YES=1 ;;
         *)      usage ;;
         esac
 done
 
 [ "$(id -u)" = 0 ] || die "must run as root"
-for t in sfdisk mkfs.ext4 blkid tar extlinux dd; do
+
+case "$MODE" in
+"")      # autodetect: UEFI when booted with efivars mounted
+        if [ -d /sys/firmware/efi/efivars ]; then
+                MODE=uefi
+        else
+                MODE=bios
+        fi
+        ;;
+bios|uefi) ;;
+*)       die "unknown bootloader mode: $MODE (bios|uefi)" ;;
+esac
+
+for t in sfdisk mkfs.ext4 blkid tar dd; do
         have "$t" || die "$t not found"
 done
 [ -f /usr/lib/kinini/initramfs-disk.img ] \
         || die "/usr/lib/kinini/initramfs-disk.img not found (live iso only)"
+
+if [ "$MODE" = uefi ]; then
+        MKFSVFAT=$(command -v mkfs.vfat || command -v mkfs.fat || true)
+        [ -n "$MKFSVFAT" ] || die "mkfs.vfat not found (dosfstools)"
+        [ -f /usr/lib/kinini/BOOTX64.EFI ] \
+                || die "/usr/lib/kinini/BOOTX64.EFI not found (live iso only)"
+else
+        for t in extlinux mbr.bin ldlinux.c32; do
+                case $t in
+                extlinux)       sl=/usr/bin/extlinux ;;
+                mbr.bin)        sl=/usr/lib/syslinux/mbr.bin ;;
+                ldlinux.c32)    sl=/usr/lib/syslinux/ldlinux.c32 ;;
+                esac
+                [ -f "$sl" ] || die "$sl not found (syslinux package missing from the live image)"
+        done
+fi
+
+# default swap: 2x RAM capped at 4 GiB, CachyOS-style zram handles the rest
+RAM_MIB=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 512)
+[ -n "$RAM_MIB" ] || RAM_MIB=512
+if [ -z "$SWAP" ]; then
+        SWAP=$(( RAM_MIB * 2 ))
+        [ "$SWAP" -gt 4096 ] && SWAP=4096
+fi
+case "$SWAP" in
+''|*[!0-9]*) die "swap size must be a non-negative integer (MiB)" ;;
+esac
 
 # ---------------------------------------------------------------- disk pick
 if [ -z "$DISK" ]; then
@@ -87,40 +147,99 @@ case "$DISK" in
 esac
 [ -b "$DISK" ] || die "$DISK is not a block device"
 
+partdev() {
+        case "$DISK" in
+        *nvme*|*mmcblk*)        echo "${DISK}p$1" ;;
+        *)                      echo "$DISK$1" ;;
+        esac
+}
+
 sz=$(( $(cat "/sys/block/${DISK#/dev/}/size") * 512 / 1024 / 1024 ))
+if [ "$MODE" = uefi ]; then
+        layout="GPT: ${ESP_MIB} MiB ESP + grub (UEFI)"
+else
+        layout="msdos: extlinux (BIOS)"
+fi
 if [ "$YES" = 0 ]; then
         echo
         echo "  WARNING: everything on $DISK (${sz} MB) will be destroyed."
-        echo "  A single ext4 root partition with extlinux (BIOS) is created."
+        echo "  Layout: $layout, ext4 root"
+        if [ "$SWAP" -gt 0 ]; then
+                echo "  Swap:   ${SWAP} MiB partition (+ zram by default)"
+        else
+                echo "  Swap:   none (zram only)"
+        fi
         echo
         ask "proceed?" n || die "aborted"
 fi
 
 # ---------------------------------------------------------------- partition
-msg "partitioning $DISK"
-sfdisk -q "$DISK" <<'EOF'
-label: dos
-type=83, bootable
-EOF
+msg "partitioning $DISK ($MODE)"
+if [ "$MODE" = uefi ]; then
+        {
+                echo "label: gpt"
+                echo "size=${ESP_MIB}MiB, type=U, name=KININI-ESP"
+                if [ "$SWAP" -gt 0 ]; then
+                        echo "size=${SWAP}MiB, type=S, name=KININI-SWAP"
+                fi
+                echo "type=L, name=KININI-ROOT"
+        } | sfdisk -q "$DISK"
+else
+        {
+                echo "label: dos"
+                echo "type=83, bootable"
+                if [ "$SWAP" -gt 0 ]; then
+                        echo "type=82"
+                fi
+        } | sfdisk -q "$DISK"
+fi
 
 blockdev --rereadpt "$DISK" 2>/dev/null || true
 sleep 1
-case "$DISK" in
-*nvme*|*mmcblk*)        PART=${DISK}p1 ;;
-*)                      PART=${DISK}1 ;;
-esac
-[ -b "$PART" ] || die "partition $PART did not appear"
 
-msg "creating ext4 on $PART"
+if [ "$MODE" = uefi ]; then
+        ESPPART=$(partdev 1)
+        if [ "$SWAP" -gt 0 ]; then
+                SWAPPART=$(partdev 2)
+                ROOTPART=$(partdev 3)
+        else
+                SWAPPART=
+                ROOTPART=$(partdev 2)
+        fi
+else
+        ROOTPART=$(partdev 1)
+        if [ "$SWAP" -gt 0 ]; then
+                SWAPPART=$(partdev 2)
+        else
+                SWAPPART=
+        fi
+fi
+
+msg "creating filesystems"
+if [ "$MODE" = uefi ]; then
+        [ -b "$ESPPART" ] || die "partition $ESPPART did not appear"
+        "$MKFSVFAT" -F 32 -n KININI-ESP "$ESPPART" >/dev/null
+fi
 # syslinux 6.03 cannot read fs with 64bit/metadata_csum/orphan_file,
 # keep the feature set conservative for the bootloader
 mkfs.ext4 -q -F -O ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file \
-        -L kinini "$PART"
+        -L kinini "$ROOTPART"
+
+if [ -n "$SWAPPART" ]; then
+        [ -b "$SWAPPART" ] || die "partition $SWAPPART did not appear"
+        mkswap -L kinini-swap "$SWAPPART" >/dev/null
+        swapon "$SWAPPART" 2>/dev/null || true
+        msg "swap on $SWAPPART (${SWAP} MiB)"
+fi
 
 # ---------------------------------------------------------------- copy root
 mkdir -p "$TARGET"
 mountpoint -q "$TARGET" && die "$TARGET already mounted"
-mount -t ext4 "$PART" "$TARGET"
+mount -t ext4 "$ROOTPART" "$TARGET"
+if [ "$MODE" = uefi ]; then
+        mkdir -p "$TARGET/boot/efi"
+        mount -t vfat "$ESPPART" "$TARGET/boot/efi"
+fi
 
 msg "copying live system to $TARGET (this may take a while)"
 tar -C / --one-file-system --numeric-owner -cf - . | tar -C "$TARGET" -xf -
@@ -143,13 +262,30 @@ sed -i '/^for f in \/var\/db\/xbps\/pkgdb-\*\.plist; do$/,/^exit 0$/d' \
 grep -q '^exit 0$' "$TARGET/etc/niinit/1" || echo 'exit 0' \
         >> "$TARGET/etc/niinit/1"
 
+# ---------------------------------------------------------------- services
+if [ "$NODHCP" = 0 ] \
+        && [ -d "$TARGET/etc/niinit/services-available/dhcpcd" ]; then
+        msg "enabling DHCP client service (dhcpcd)"
+        ln -sfn /etc/niinit/services-available/dhcpcd \
+                "$TARGET/etc/niinit/services/dhcpcd"
+fi
+
 # ---------------------------------------------------------------- fstab
-UUID=$(blkid -s UUID -o value "$PART")
-[ -n "$UUID" ] || die "cannot read uuid of $PART"
-cat > "$TARGET/etc/fstab" <<EOF
-UUID=$UUID  /       ext4    defaults        0 1
-tmpfs       /tmp    tmpfs   defaults,nosuid 0 0
-EOF
+UUID_ROOT=$(blkid -s UUID -o value "$ROOTPART")
+[ -n "$UUID_ROOT" ] || die "cannot read uuid of $ROOTPART"
+{
+        echo "UUID=$UUID_ROOT  /       ext4    defaults        0 1"
+        echo "tmpfs       /tmp    tmpfs   defaults,nosuid 0 0"
+        if [ "$MODE" = uefi ]; then
+                UUID_ESP=$(blkid -s UUID -o value "$ESPPART")
+                [ -n "$UUID_ESP" ] \
+                        && echo "UUID=$UUID_ESP  /boot/efi  vfat  defaults  0 2"
+        fi
+        if [ -n "$SWAPPART" ]; then
+                UUID_SWAP=$(blkid -s UUID -o value "$SWAPPART")
+                [ -n "$UUID_SWAP" ] && echo "UUID=$UUID_SWAP  none    swap    sw              0 0"
+        fi
+} > "$TARGET/etc/fstab"
 
 # ---------------------------------------------------------------- password
 if [ "$YES" = 0 ] && ask "set root password now?" y; then
@@ -159,23 +295,38 @@ else
 fi
 
 # ---------------------------------------------------------------- bootloader
-for t in extlinux mbr.bin ldlinux.c32; do
-        case $t in
-        extlinux)       sl=/usr/bin/extlinux ;;
-        mbr.bin)        sl=/usr/lib/syslinux/mbr.bin ;;
-        ldlinux.c32)    sl=/usr/lib/syslinux/ldlinux.c32 ;;
-        esac
-        [ -f "$sl" ] || die "$sl not found (syslinux package missing from the live image)"
-done
-
-mkdir -p "$TARGET/boot/extlinux"
 KVER=$(uname -r)
 msg "installing kernel $KVER and initramfs into the target"
 cp /usr/lib/kinini/vmlinuz "$TARGET/boot/vmlinuz-$KVER"
 chmod 644 "$TARGET/boot/vmlinuz-$KVER"
 cp /usr/lib/kinini/initramfs-disk.img "$TARGET/boot/initramfs.img"
 
-cat > "$TARGET/boot/extlinux/extlinux.conf" <<EOF
+if [ "$MODE" = uefi ]; then
+        msg "writing grub configuration"
+        mkdir -p "$TARGET/boot/grub"
+        cat > "$TARGET/boot/grub/grub.cfg" <<EOF
+set timeout=3
+set default=0
+
+menuentry "KiniNi Linux" {
+    linux /boot/vmlinuz-$KVER root=UUID=$UUID_ROOT rw console=tty0 console=ttyS0,115200n8 loglevel=4
+    initrd /boot/initramfs.img
+}
+EOF
+        # the standalone BOOTX64.EFI locates this filesystem by the
+        # /.kinini-live marker and reads /boot/grub/grub.cfg from it
+        : > "$TARGET/.kinini-live"
+
+        msg "installing grub EFI loader on the ESP"
+        mkdir -p "$TARGET/boot/efi/EFI/BOOT" "$TARGET/boot/efi/EFI/kinini"
+        install -m755 /usr/lib/kinini/BOOTX64.EFI \
+                "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
+        install -m755 /usr/lib/kinini/BOOTX64.EFI \
+                "$TARGET/boot/efi/EFI/kinini/grubx64.efi"
+else
+        msg "writing extlinux boot sector"
+        mkdir -p "$TARGET/boot/extlinux"
+        cat > "$TARGET/boot/extlinux/extlinux.conf" <<EOF
 DEFAULT kinini
 PROMPT 0
 TIMEOUT 30
@@ -183,20 +334,28 @@ TIMEOUT 30
 LABEL kinini
         KERNEL /boot/vmlinuz-$(uname -r)
         INITRD /boot/initramfs.img
-        APPEND root=UUID=$UUID rw console=tty0 console=ttyS0,115200n8 loglevel=4
+        APPEND root=UUID=$UUID_ROOT rw console=tty0 console=ttyS0,115200n8 loglevel=4
 EOF
 
-msg "writing extlinux boot sector"
-/usr/bin/extlinux --install "$TARGET/boot/extlinux"
-install -m644 /usr/lib/syslinux/ldlinux.c32 "$TARGET/boot/extlinux/ldlinux.c32"
-dd if=/usr/lib/syslinux/mbr.bin of="$DISK" bs=440 count=1 \
-        conv=notrunc status=none
+        /usr/bin/extlinux --install "$TARGET/boot/extlinux"
+        install -m644 /usr/lib/syslinux/ldlinux.c32 "$TARGET/boot/extlinux/ldlinux.c32"
+        dd if=/usr/lib/syslinux/mbr.bin of="$DISK" bs=440 count=1 \
+                conv=notrunc status=none
+fi
 
+# ---------------------------------------------------------------- finish
 msg "unmounting"
 cd /
+if [ "$MODE" = uefi ]; then
+        umount "$TARGET/boot/efi"
+fi
 umount "$TARGET"
 sync
 
 echo
-msg "done: KiniNi installed on $PART (UUID $UUID)"
+if [ "$MODE" = uefi ]; then
+        msg "done: KiniNi installed on $ROOTPART (UUID $UUID_ROOT), ESP $ESPPART"
+else
+        msg "done: KiniNi installed on $ROOTPART (UUID $UUID_ROOT)"
+fi
 msg "reboot and remove the live medium to boot from disk"
