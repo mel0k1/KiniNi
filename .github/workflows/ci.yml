@@ -79,6 +79,7 @@ jobs:
         run: /src/tools/mkrootfs.sh /tmp/rootfs
       - name: verify rootfs
         run: |
+          set -x
           test -x /tmp/rootfs/sbin/niinit
           test -L /tmp/rootfs/sbin/init
           test -x /tmp/rootfs/sbin/niinit-sv

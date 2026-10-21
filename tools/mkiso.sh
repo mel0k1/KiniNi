@@ -444,6 +444,7 @@ normal
 EOF
         if ! "$GRUB_MKIMAGE" -O x86_64-efi -d "$GRUB_EFI_DIR" \
                 -o "$WORK/BOOTX64.EFI" -c "$WORK/early.cfg" \
+                -p '(memdisk)/boot/grub' \
                 boot configfile echo ext2 fat iso9660 gzio linux ls normal \
                 part_gpt part_msdos search search_fs_file search_fs_uuid \
                 search_label sleep test efi_gop; then
