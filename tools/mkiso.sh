@@ -364,7 +364,7 @@ for m in scsi_common scsi_mod sd_mod \
 done
 
 ROOT=
-for o in $(cat /proc/cmdline); do
+for o in $($BB cat /proc/cmdline); do
         case "$o" in
         root=*) ROOT=${o#root=} ;;
         esac
