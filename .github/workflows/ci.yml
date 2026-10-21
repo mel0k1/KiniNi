@@ -32,19 +32,24 @@ jobs:
       - name: lint scripts
         run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh
       - name: smoke test supervisor
+        run: /src/niinit/test-sv.sh
+
+      - name: smoke test svdir
         run: |
-          mkdir -p /tmp/svtest/svc
-          printf '#!/bin/sh\nexec sleep 30\n' > /tmp/svtest/svc/run
-          chmod +x /tmp/svtest/svc/run
-          PATH="/src/niinit/bin:$PATH" niinit-sv /tmp/svtest/svc &
-          sleep 1
-          test "$(cat /tmp/svtest/svc/stat)" = up
-          NIINIT_SVDIR=/tmp/svtest /src/niinit/bin/svctl down svc
-          sleep 1
-          test "$(cat /tmp/svtest/svc/stat)" = down
-          NIINIT_SVDIR=/tmp/svtest /src/niinit/bin/svctl up svc
-          sleep 1
-          test "$(cat /tmp/svtest/svc/stat)" = up
+          mkdir -p /tmp/svdirtest/services /tmp/svdirtest/available/foo
+          printf '#!/bin/sh\nexec sleep 30\n' > /tmp/svdirtest/available/foo/run
+          chmod +x /tmp/svdirtest/available/foo/run
+          NIINIT_SVDIR=/tmp/svdirtest/services NIINIT_SVAVAIL=/tmp/svdirtest/available \
+            /src/niinit/bin/svctl enable foo
+          test -L /tmp/svdirtest/services/foo
+          /src/niinit/bin/niinit-svdir /tmp/svdirtest/services &
+          sleep 6
+          test "$(cat /tmp/svdirtest/services/foo/stat)" = up
+          NIINIT_SVDIR=/tmp/svdirtest/services NIINIT_SVAVAIL=/tmp/svdirtest/available \
+            /src/niinit/bin/svctl disable foo
+          sleep 7
+          test ! -e /tmp/svdirtest/services/foo
+          test ! -e /tmp/svdirtest/services/foo/stat
 
   rootfs:
     name: rootfs smoke test
@@ -125,7 +130,8 @@ jobs:
       - name: build rootfs
         run: |
           IGNORE_PKGS=linux /src/tools/mkrootfs.sh /tmp/rootfs \
-            https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch
+            https://repo-default.voidlinux.org/current base-system linux6.12 \
+            fastfetch syslinux
       - name: build iso
         run: /src/tools/mkiso.sh /tmp/rootfs /tmp/kinini.iso
       - name: verify iso
