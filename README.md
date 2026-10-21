@@ -45,7 +45,8 @@ and surprisingly resilient. The ASCII bird greets you on every console via
 | **niinit-svdir** | Watches `/etc/niinit/services`, spawns/stops supervisors as dirs appear/vanish | C99 |
 | **svctl** | `status` / `up` / `down` / `restart` / `kill`; doubles as `reboot`/`poweroff` | C99 |
 | **kipki** | Package manager on libxbps: transactions, search, orphans, holds, local log | C + libxbps |
-| **mkrootfs** | Builds a bootable rootfs from Void repositories | POSIX sh |
+| **mkrootfs** | Builds a rootfs from Void repositories | POSIX sh |
+| **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux, overlayfs root | POSIX sh |
 
 ## Quick start
 
@@ -69,6 +70,34 @@ Build a rootfs (run on Void Linux or inside `voidlinux/voidlinux`, as root):
 The script produces a complete tree: `base-system` packages, `niinit` as the
 init, `kipki` as the package manager, getty services on tty1–tty6, and the
 kiwi mascot in place for `fastfetch`.
+
+## Live ISO
+
+`tools/mkiso.sh` turns a rootfs into a bootable hybrid ISO — Linux kernel
+6.12, a busybox initramfs that finds the medium and mounts an overlayfs root
+(all writes go to a tmpfs layer, the medium stays untouched), isolinux for
+BIOS boot and `isohybrid` so the same image also boots from a USB stick:
+
+```sh
+# rootfs with a kernel and fastfetch (linux metapackage is skipped,
+# the LTS kernel series is pinned explicitly):
+IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
+        https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch
+
+./tools/mkiso.sh /tmp/rootfs kinini-0.1-x86_64.iso
+```
+
+Test it in qemu:
+
+```sh
+qemu-system-x86_64 -m 1024 -cdrom kinini-0.1-x86_64.iso -boot d
+```
+
+The live session autologs in on tty1 and greets you with the bird:
+
+<p align="center">
+  <img src="assets/screenshot-fastfetch.png" width="720" alt="KiniNi live console with fastfetch and the kiwi mascot"/>
+</p>
 
 ## Package management with kipki
 
@@ -108,6 +137,16 @@ control FIFO:
 exec agetty --noclear -L tty1 38400 linux
 ```
 
+Nothing is enabled behind the user's back: services live in
+`/etc/niinit/services-available` until you link them in. `sshd` ships there
+as an optional service — disabled by default, no host keys are generated
+until you turn it on:
+
+```sh
+cp -a /etc/niinit/services-available/sshd /etc/niinit/services/
+svctl up sshd          # svdir notices the new dir within 5s
+```
+
 ```sh
 svctl status               # overview of all services
 svctl restart sshd         # up / down / restart / kill
@@ -121,19 +160,25 @@ services until shutdown, and `/etc/niinit/3` unmounts everything back.
 
 ## Booting
 
-KiniNi ships no kernel or bootloader of its own — point any Linux kernel and
-bootloader (GRUB, syslinux, EFISTUB) at the rootfs:
+For a disk install, point any Linux kernel and bootloader (GRUB, syslinux,
+EFISTUB) at the rootfs — `/sbin/init` is a symlink to `niinit`, so no special
+kernel arguments are needed (pass `init=/sbin/niinit` if you prefer to be
+explicit):
 
 ```
-root=UUID=... rw init=/sbin/niinit
+root=UUID=... rw
 ```
+
+Or skip the manual assembly entirely and use the live ISO above.
 
 ## CI
 
-Every push runs two Void Linux container jobs: one builds both components and
-smoke-tests the supervisor lifecycle (up → down → up through the control
-FIFO), the other builds a full rootfs from live Void repositories and verifies
-the resulting tree byte by byte.
+Every push runs three Void Linux container jobs: one builds both components
+and smoke-tests the supervisor lifecycle (up → down → up through the control
+FIFO), the second builds a full rootfs from live Void repositories and
+verifies the resulting tree byte by byte, and the third builds the complete
+live ISO (including a static busybox compiled from source) and uploads it as
+a workflow artifact.
 
 ## Mascot
 
@@ -165,6 +210,9 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 - `kipki` — пакетный менеджер на libxbps: транзакции с предпросмотром,
   поиск, сироты, hold, локальный журнал операций;
 - `tools/mkrootfs.sh` — сборка корня из репозиториев Void;
+- `tools/mkiso.sh` — загрузочный live-ISO: ядро 6.12, initramfs на busybox,
+  isolinux + isohybrid, корень на overlayfs; sshd лежит в
+  `services-available` и по умолчанию выключен;
 - маскот — птичка киви, ASCII-арт устанавливается в
   `/usr/share/kinini/kiwi.txt` и показывается `fastfetch`.
 
@@ -173,7 +221,11 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 **Rootfs:** `./tools/mkrootfs.sh /mnt/kinini` (на Void или в контейнере
 `voidlinux/voidlinux`, от root).
 
-**Загрузка:** ядро и загрузчик любые, системе нужен только
-`init=/sbin/niinit`.
+**Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
+https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch`,
+затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`.
+
+**Загрузка:** `/sbin/init` — симлинк на `niinit`, так что достаточно любого
+ядра и загрузчика; либо просто загрузите live-ISO.
 
 **Лицензия:** BSD-2-Clause.
