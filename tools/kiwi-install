@@ -187,10 +187,12 @@ if [ "$MODE" = uefi ]; then
 else
         {
                 echo "label: dos"
-                echo "type=83, bootable"
+                # swap first with an explicit size, root takes the rest
+                # (an unsized partition consumes the whole disk)
                 if [ "$SWAP" -gt 0 ]; then
-                        echo "type=82"
+                        echo "size=${SWAP}MiB, type=82"
                 fi
+                echo "type=83, bootable"
         } | sfdisk -q "$DISK"
 fi
 
@@ -207,11 +209,12 @@ if [ "$MODE" = uefi ]; then
                 ROOTPART=$(partdev 2)
         fi
 else
-        ROOTPART=$(partdev 1)
         if [ "$SWAP" -gt 0 ]; then
-                SWAPPART=$(partdev 2)
+                SWAPPART=$(partdev 1)
+                ROOTPART=$(partdev 2)
         else
                 SWAPPART=
+                ROOTPART=$(partdev 1)
         fi
 fi
 
