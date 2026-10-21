@@ -46,8 +46,9 @@ and surprisingly resilient. The ASCII bird greets you on every console via
 | **svctl** | `status` (with uptime) / `up` / `down` / `start` / `stop` / `restart` / `once` / `pause` / `cont` / signals / `check` / `enable` / `disable`; doubles as `reboot`/`poweroff`/`halt` | C99 |
 | **kipki** | Package manager on libxbps: transactions, search, orphans, holds, local log | C + libxbps |
 | **mkrootfs** | Builds a rootfs from Void repositories | POSIX sh |
-| **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux, overlayfs root, disk installer on board | POSIX sh |
-| **kiwi-install** | Disk installer: partitions, copies the live system, writes fstab and an extlinux bootloader | POSIX sh |
+| **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux + grub-efi (BIOS **and** UEFI), overlayfs root, disk installer on board | POSIX sh |
+| **kiwi-install** | Disk installer: partitions (msdos/GPT), copies the live system, swap partition, fstab, offline extlinux (BIOS) or grub-on-ESP (UEFI) bootloader | POSIX sh |
+| **kinini-settings** | CachyOS-inspired tuning shipped in the skel: sysctl.d profile, per-device IO-scheduler udev rules, zram swap, watchdog blacklists | conf/sh |
 
 ## Quick start
 
@@ -77,7 +78,9 @@ kiwi mascot in place for `fastfetch`.
 `tools/mkiso.sh` turns a rootfs into a bootable hybrid ISO — Linux kernel
 6.12, a busybox initramfs that finds the medium and mounts an overlayfs root
 (all writes go to a tmpfs layer, the medium stays untouched), isolinux for
-BIOS boot and `isohybrid` so the same image also boots from a USB stick:
+BIOS and a standalone grub `x86_64-efi` on an appended FAT ESP for UEFI
+(same `grub-mkrescue`-style image boots CDs and USB sticks on both firmware
+types):
 
 ```sh
 # rootfs with a kernel and fastfetch (linux metapackage is skipped,
@@ -85,16 +88,19 @@ BIOS boot and `isohybrid` so the same image also boots from a USB stick:
 IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
         https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch
 
-./tools/mkiso.sh /tmp/rootfs kinini-0.2-x86_64.iso
+./tools/mkiso.sh /tmp/rootfs kinini-0.3-x86_64.iso
 ```
 
-Test it in qemu:
+Test it in qemu (BIOS or OVMF/UEFI — the same image):
 
 ```sh
-qemu-system-x86_64 -m 1024 -cdrom kinini-0.2-x86_64.iso -boot d
+qemu-system-x86_64 -m 1024 -cdrom kinini-0.3-x86_64.iso -boot d
+qemu-system-x86_64 -m 1024 -cdrom kinini-0.3-x86_64.iso -bios OVMF.fd
 ```
 
-The live session autologs in on tty1 and greets you with the bird:
+The live session autologs in on tty1 and ttyS0, brings the network up via
+DHCP (`dhcpcd` service, enabled on the live image) and greets you with the
+bird:
 
 <p align="center">
   <img src="assets/screenshot-fastfetch.png" width="720" alt="KiniNi live console with fastfetch and the kiwi mascot"/>
@@ -139,13 +145,14 @@ exec agetty --noclear -L tty1 38400 linux
 ```
 
 Nothing is enabled behind the user's back: services live in
-`/etc/niinit/services-available` until you link them in. `sshd` ships there
-as an optional service — disabled by default, no host keys are generated
-until you turn it on:
+`/etc/niinit/services-available` until you link them in. `sshd` and `dhcpcd`
+ship there as optional services — disabled by default in installed systems
+(the live ISO turns DHCP on for you):
 
 ```sh
 svctl enable sshd       # symlink from services-available, svdir picks it up in <=5s
 svctl start sshd        # waits until it is actually up
+svctl enable dhcpcd     # DHCP on wired interfaces (runs dhcpcd -B -M, foreground)
 ```
 
 `svctl enable/disable` manage those symlinks for you; the supervisor honors
@@ -172,25 +179,65 @@ KILL, then runs stage 3.
 
 ## Installing to disk
 
-The live ISO ships a complete installer. Boot the ISO and run as root:
+The live ISO ships a complete installer. Boot the ISO (BIOS or UEFI — the
+installer autodetects the firmware via `/sys/firmware/efi/efivars`) and run
+as root:
 
 ```sh
-kiwi-install -d /dev/sda -y
+kiwi-install -d /dev/sda -y              # BIOS: msdos + extlinux
+kiwi-install -d /dev/nvme0n1 -y          # UEFI (autodetected): GPT + ESP + grub
+kiwi-install -d /dev/sda -b uefi -y      # force UEFI layout on a BIOS boot
+kiwi-install -d /dev/sda -s 0 -N -y      # no swap partition, no DHCP
 ```
 
-It partitions the disk (one bootable ext4 root), copies the live system,
-restores the standard gettys (no autologin on a real install), writes an
-`/etc/fstab` and installs an offline extlinux (BIOS) bootloader from the
-`syslinux` package that ships inside the ISO — no network needed. The root
-password stays `kinini` until you change it (`passwd`).
+It partitions the disk, creates a swap partition (default `min(2×RAM, 4 GiB)`,
+`-s` to change) and an ext4 root, copies the live system, restores the
+standard gettys (no autologin on a real install), enables the `dhcpcd`
+service (unless `-N`), writes an `/etc/fstab` and installs a bootloader —
+all offline, from binaries shipped inside the ISO:
 
-Without `-y` the installer lists disks, asks for confirmation and offers to
-set the root password interactively. After it finishes, remove the medium
-and reboot straight into the installed system — the ISO has been verified
-to install and boot in qemu end to end (install → boot → login → clean
-poweroff).
+- **BIOS**: msdos label, extlinux + syslinux MBR;
+- **UEFI**: GPT with a 512 MiB ESP, and the standalone grub `x86_64-efi`
+  binary copied to `\EFI\BOOT\BOOTX64.EFI` — the removable-drive fallback
+  path that boots on any UEFI machine without touching NVRAM. The loader
+  locates the root filesystem by the `/.kinini-live` marker and reads
+  `/boot/grub/grub.cfg` from it.
 
-> BIOS/extlinux only for now; UEFI and swap setup are on the roadmap.
+zram swap is configured in addition to the swap partition (see below). The
+root password stays `kinini` until you change it (`passwd`). Without `-y`
+the installer lists disks, asks for confirmation and offers to set the root
+password interactively. After it finishes, remove the medium and reboot
+straight into the installed system.
+
+Both firmware paths are verified in CI on every push: qemu boots the ISO,
+installs it to a virtio disk, reboots from disk and checks login, DHCP
+lease, zram and the tuning — over the serial console, for BIOS and OVMF
+UEFI alike.
+
+## System tuning (CachyOS-inspired)
+
+KiniNi is not a bare-bones base: the skel ships a tuned profile ported from
+[CachyOS-Settings](https://github.com/CachyOS/CachyOS-Settings), applied at
+boot by `/etc/niinit/1`:
+
+- **sysctl** (`/usr/lib/sysctl.d/70-kinini-settings.conf`): zram-friendly
+  `vm.swappiness=100` (150 while zram is active), `vfs_cache_pressure=50`,
+  absolute dirty-page limits, `page-cluster=0`, big `max_map_count`, quiet
+  console (`printk 3 3 3 3`), NMI watchdog off, larger socket/backlog
+  buffers and **BBR congestion control with fq pacing**;
+- **zram swap** (`/usr/sbin/zram-swap` + `/etc/kinini/zram.conf`):
+  `min(RAM, 32 GiB)` of zstd-compressed swap at priority 100 by default,
+  zswap disabled while zram runs — same reasoning as CachyOS;
+- **IO schedulers** (`66-kinini-iosched.rules`): `bfq` for HDDs,
+  `mq-deadline` for SATA/USB SSDs and eMMC, `kyber` for NVMe;
+- **watchdog blacklists** (`kinini-watchdog.conf`): iTCO/sp5100/wdat off —
+  less power, one less module at boot;
+- **amdgpu si/cik** support (`kinini-amdgpu.conf`) for GCN 1/2 Radeons;
+- **transparent hugepage defrag** set to `defer+madvise` at boot.
+
+Everything is a plain config file under `/etc` or `/usr/lib` — edit
+`/etc/sysctl.d/*.conf` or `/etc/kinini/zram.conf` to override, no tools
+required.
 
 ## Booting
 
@@ -208,7 +255,10 @@ and runs the supervisor test suite (up/down/restart/once, `down` files,
 supervisor exit, plus the `svdir` spawn/stop cycle), the second builds a full
 rootfs from live Void repositories and verifies the resulting tree byte by
 byte, and the third builds the complete live ISO (including a static busybox
-compiled from source) and uploads it as a workflow artifact.
+compiled from source), then **boots it in qemu — BIOS and OVMF UEFI —
+installs to a virtual disk and reboots from the installed system**, checking
+login, DHCP, zram and the tuning over the serial console before uploading
+the ISO as a workflow artifact.
 
 ## Mascot
 
@@ -244,10 +294,16 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
   поиск, сироты, hold, локальный журнал операций;
 - `tools/mkrootfs.sh` — сборка корня из репозиториев Void;
 - `tools/mkiso.sh` — загрузочный live-ISO: ядро 6.12, initramfs на busybox,
-  isolinux + isohybrid, корень на overlayfs; sshd лежит в
-  `services-available` и по умолчанию выключен;
-- `tools/kiwi-install` — установщик на диск: разметка, копирование live-
-  системы, fstab и extlinux (BIOS) без сети, прямо из ISO;
+  isolinux (BIOS) и grub x86_64-efi на ESP (UEFI) в одном гибридном образе,
+  корень на overlayfs; sshd и dhcpcd лежат в `services-available`, на live
+  DHCP включён сразу;
+- `tools/kiwi-install` — установщик на диск: разметка (msdos/GPT),
+  swap-раздел, копирование live-системы, fstab и загрузчик без сети —
+  extlinux (BIOS) или grub на ESP (UEFI, `\EFI\BOOT\BOOTX64.EFI`);
+- **tuning** — системные настройки в духе CachyOS: sysctl-профиль
+  (swappiness, vfs_cache_pressure, BBR+fq и т.д.), zram-подкачка
+  (`zram-swap`, zstd, приоритет 100), udev-правила выбора IO-планировщика
+  (bfq/mq-deadline/kyber), блэклисты watchdog'ов, THP `defer+madvise`;
 - маскот — птичка киви, ASCII-арт устанавливается в
   `/usr/share/kinini/kiwi.txt` и показывается `fastfetch`.
 
@@ -257,12 +313,22 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 `voidlinux/voidlinux`, от root).
 
 **Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
-https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux`,
+https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools`,
 затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`.
 
-**Установка на диск:** загрузите ISO и выполните `kiwi-install -d /dev/sda -y`
-— разметка, копирование системы, fstab и extlinux без сети; проверено
-end-to-end в QEMU (установка → загрузка с диска → вход → чистый poweroff).
+**Установка на диск:** загрузите ISO (BIOS или UEFI — установщик
+определяет прошивку сам) и выполните:
+
+```sh
+kiwi-install -d /dev/nvme0n1 -y    # UEFI: GPT + ESP + grub
+kiwi-install -d /dev/sda -y        # BIOS: msdos + extlinux
+```
+
+— разметка, swap-раздел (по умолчанию min(2×RAM, 4 ГиБ)), копирование
+системы, fstab, DHCP-сервис и загрузчик без сети; оба пути проверяются
+в CI на каждый пуш: QEMU грузит ISO, ставит систему на виртуальный диск
+и перезагружается с неё (BIOS и OVMF/UEFI), проверяя вход, DHCP, zram
+и настройку swappiness по serial-консоли.
 
 **Загрузка:** `/sbin/init` — симлинк на `niinit`, так что достаточно любого
 ядра и загрузчика; либо просто установите систему через `kiwi-install`.
