@@ -30,7 +30,7 @@ jobs:
       - name: build
         run: make -C /src
       - name: lint scripts
-        run: shellcheck /src/tools/mkrootfs.sh
+        run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh
       - name: smoke test supervisor
         run: |
           mkdir -p /tmp/svtest/svc
@@ -74,6 +74,7 @@ jobs:
       - name: verify rootfs
         run: |
           test -x /tmp/rootfs/sbin/niinit
+          test -L /tmp/rootfs/sbin/init
           test -x /tmp/rootfs/sbin/niinit-sv
           test -x /tmp/rootfs/sbin/niinit-svdir
           test -x /tmp/rootfs/usr/bin/kipki
@@ -85,3 +86,53 @@ jobs:
           test -x /tmp/rootfs/etc/niinit/1
           test -x /tmp/rootfs/etc/niinit/3
           test -x /tmp/rootfs/etc/niinit/services/getty-tty6/run
+          test -x /tmp/rootfs/etc/niinit/services-available/sshd/run
+          test ! -e /tmp/rootfs/etc/niinit/services/sshd
+
+  iso:
+    name: iso build
+    runs-on: ubuntu-latest
+    container: voidlinux/voidlinux
+    steps:
+      - name: install toolchain
+        run: |
+          mkdir -p /etc/xbps.d
+          printf 'repository=https://repo-default.voidlinux.org/current\n' \
+            > /etc/xbps.d/00-repository-main.conf
+          xbps-install -y -Su xbps
+          xbps-install -y -u
+          xbps-install -y gcc make pkg-config libxbps-devel libarchive-devel \
+            openssl-devel git cpio gzip xorriso syslinux findutils zstd wget
+      - name: build static busybox
+        run: |
+          wget -q https://busybox.net/downloads/busybox-1.36.1.tar.bz2
+          tar xf busybox-1.36.1.tar.bz2
+          cd busybox-1.36.1
+          make defconfig
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          make -j"$(nproc)" >/dev/null
+          echo "BUSYBOX=$PWD/busybox" >> "$GITHUB_ENV"
+      - name: clone
+        run: |
+          git init /src
+          cd /src
+          git remote add origin "https://github.com/${{ github.repository }}"
+          git fetch --depth 1 origin "${{ github.sha }}"
+          git checkout FETCH_HEAD
+      - name: build
+        run: make -C /src
+      - name: build rootfs
+        run: |
+          IGNORE_PKGS=linux /src/tools/mkrootfs.sh /tmp/rootfs \
+            https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch
+      - name: build iso
+        run: /src/tools/mkiso.sh /tmp/rootfs /tmp/kinini.iso
+      - name: verify iso
+        run: |
+          test -s /tmp/kinini.iso
+          test "$(stat -c %s /tmp/kinini.iso)" -gt 50000000
+      - name: upload iso
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinini-live-iso
+          path: /tmp/kinini.iso
