@@ -36,17 +36,18 @@ jobs:
 
       - name: smoke test svdir
         run: |
+          export PATH="/src/niinit/bin:$PATH"
           mkdir -p /tmp/svdirtest/services /tmp/svdirtest/available/foo
           printf '#!/bin/sh\nexec sleep 30\n' > /tmp/svdirtest/available/foo/run
           chmod +x /tmp/svdirtest/available/foo/run
           NIINIT_SVDIR=/tmp/svdirtest/services NIINIT_SVAVAIL=/tmp/svdirtest/available \
-            /src/niinit/bin/svctl enable foo
+            svctl enable foo
           test -L /tmp/svdirtest/services/foo
-          /src/niinit/bin/niinit-svdir /tmp/svdirtest/services &
+          niinit-svdir /tmp/svdirtest/services &
           sleep 6
           test "$(cat /tmp/svdirtest/services/foo/stat)" = up
           NIINIT_SVDIR=/tmp/svdirtest/services NIINIT_SVAVAIL=/tmp/svdirtest/available \
-            /src/niinit/bin/svctl disable foo
+            svctl disable foo
           sleep 7
           test ! -e /tmp/svdirtest/services/foo
           test ! -e /tmp/svdirtest/services/foo/stat
