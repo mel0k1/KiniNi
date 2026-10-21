@@ -94,7 +94,7 @@ jobs:
           test -x /tmp/rootfs/etc/niinit/services/getty-tty6/run
           test -x /tmp/rootfs/etc/niinit/services-available/sshd/run
           test ! -e /tmp/rootfs/etc/niinit/services/sshd
-          test -x /tmp/rootfs/usr/sbin/zram-swap
+          test -x /tmp/rootfs/usr/bin/zram-swap
           test -f /tmp/rootfs/etc/kinini/zram.conf
           test -f /tmp/rootfs/usr/lib/sysctl.d/70-kinini-settings.conf
           test -f /tmp/rootfs/usr/lib/udev/rules.d/66-kinini-iosched.rules

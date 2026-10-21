@@ -225,7 +225,7 @@ boot by `/etc/niinit/1`:
   absolute dirty-page limits, `page-cluster=0`, big `max_map_count`, quiet
   console (`printk 3 3 3 3`), NMI watchdog off, larger socket/backlog
   buffers and **BBR congestion control with fq pacing**;
-- **zram swap** (`/usr/sbin/zram-swap` + `/etc/kinini/zram.conf`):
+- **zram swap** (`/usr/bin/zram-swap` + `/etc/kinini/zram.conf`):
   `min(RAM, 32 GiB)` of zstd-compressed swap at priority 100 by default,
   zswap disabled while zram runs — same reasoning as CachyOS;
 - **IO schedulers** (`66-kinini-iosched.rules`): `bfq` for HDDs,

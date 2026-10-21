@@ -31,7 +31,7 @@ done
         2>/dev/null || true
 # compressed RAM swap (CachyOS-style), see /etc/kinini/zram.conf;
 # runs after the sysctl pass because it raises vm.swappiness
-[ -x /usr/sbin/zram-swap ] && /usr/sbin/zram-swap start 2>/dev/null || true
+[ -x /usr/bin/zram-swap ] && /usr/bin/zram-swap start 2>/dev/null || true
 swapon -a 2>/dev/null
 [ -f /etc/hostname ] && hostname "$(cat /etc/hostname)" 2>/dev/null
 ip link set up dev lo 2>/dev/null
