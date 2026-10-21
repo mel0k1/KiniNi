@@ -1,0 +1,16 @@
+# Pick an IO scheduler per device class (from CachyOS 60-ioschedulers.rules).
+# Writing the name autoloads the scheduler module when possible; if the
+# requested scheduler is unavailable the write is silently ignored by the
+# kernel and the default (mq-deadline/none) stays.
+
+# HDD: bfq for fair interactive IO
+ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", \
+    ATTR{queue/scheduler}="bfq"
+
+# SATA/USB SSD and eMMC
+ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", \
+    ATTR{queue/scheduler}="mq-deadline"
+
+# NVMe SSD: lowest overhead
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/rotational}=="0", \
+    ATTR{queue/scheduler}="kyber"

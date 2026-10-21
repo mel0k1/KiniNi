@@ -1,0 +1,83 @@
+#!/bin/sh
+# zram-swap - compressed RAM swap for KiniNi (CachyOS-style)
+#
+# Invoked by niinit stage 1 (/etc/niinit/1). Manages /dev/zram0:
+# formats it as swap with a modern compression algorithm and activates
+# it with a high priority so the kernel prefers it over any disk swap.
+# While zram is active, swappiness is raised and zswap disabled (same
+# reasoning as CachyOS usr/lib/udev/rules.d/30-zram.rules: anonymous
+# pages are just compressed, page cache stays in RAM).
+#
+# config: /etc/kinini/zram.conf
+#   SIZE      swap size in MiB, or "auto" = min(RAM, 32768)
+#   ALGO      compression algorithm (zstd, lz4, lzo-rle, deflate, ...)
+#   PRIORITY  swap priority (higher wins over disk swap)
+#   SWAPPINESS  vm.swappiness while zram is active
+#
+# usage: zram-swap start|stop
+
+CONF=/etc/kinini/zram.conf
+ZRAM=/dev/zram0
+SYS=/sys/block/zram0
+SIZE=auto
+ALGO=zstd
+PRIORITY=100
+SWAPPINESS=150
+[ -r "$CONF" ] && . "$CONF"
+
+case "$1" in
+stop)
+        swapoff "$ZRAM" 2>/dev/null || true
+        [ -w "$SYS/reset" ] && echo 1 > "$SYS/reset" 2>/dev/null || true
+        exit 0
+        ;;
+start)
+        ;;
+*)
+        echo "usage: ${0##*/} start|stop" >&2
+        exit 2
+        ;;
+esac
+
+# already active?
+grep -qs "^$ZRAM" /proc/swaps && exit 0
+
+[ -d /sys/module/zram ] || modprobe zram 2>/dev/null || true
+[ -e "$ZRAM" ] || {
+        echo "zram-swap: zram not available in this kernel" >&2
+        exit 0
+}
+
+if [ "$SIZE" = auto ] || [ -z "$SIZE" ]; then
+        RAM_KIB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+        [ -n "$RAM_KIB" ] || RAM_KIB=524288
+        SIZE=$(( RAM_KIB / 1024 ))
+        [ "$SIZE" -gt 32768 ] && SIZE=32768
+fi
+
+[ -n "$ALGO" ] && [ -w "$SYS/comp_algorithm" ] && \
+        echo "$ALGO" > "$SYS/comp_algorithm" 2>/dev/null || true
+
+if ! echo $(( SIZE * 1024 * 1024 )) > "$SYS/disksize" 2>/dev/null; then
+        echo "zram-swap: cannot set disksize ($SIZE MiB)" >&2
+        exit 0
+fi
+
+mkswap "$ZRAM" >/dev/null 2>&1 || {
+        echo "zram-swap: mkswap failed" >&2
+        exit 0
+}
+
+# zram pairs best with high swappiness and zswap disabled: uncompressed
+# pages would first be hashed/zswap-compressed and then zram-compressed
+# anyway, wasting CPU (CachyOS 30-zram.rules).
+sysctl -q -w "vm.swappiness=$SWAPPINESS" >/dev/null 2>&1 || true
+[ -w /sys/module/zswap/parameters/enabled ] && \
+        echo N > /sys/module/zswap/parameters/enabled 2>/dev/null || true
+
+swapon -p "$PRIORITY" "$ZRAM" 2>/dev/null || {
+        echo "zram-swap: swapon failed" >&2
+        exit 0
+}
+
+echo "zram-swap: ${SIZE}MiB ${ALGO:-zstd} swap active (priority $PRIORITY)"

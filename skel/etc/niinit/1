@@ -8,6 +8,30 @@ mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
 mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm
 mountpoint -q /run     || mount -t tmpfs run /run
 [ -x /usr/bin/udevd ] && udevd --daemon
+# replay uevents for devices that already exist, so udev rules (IO
+# scheduler selection etc.) and driver autoloading apply at boot
+[ -x /usr/bin/udevadm ] && udevadm trigger --type=devices --action=add \
+        >/dev/null 2>&1 || true
+# scheduler/qdisc/modules for the tuning and mounts below (bfq for HDDs
+# per 66-kinini-iosched.rules, bbr+fq per 70-kinini-settings.conf, vfat
+# for the ESP on UEFI installs)
+[ -x /usr/bin/modprobe ] && modprobe -q bfq tcp_bbr sch_fq zram vfat fat \
+        nls_cp437 2>/dev/null || true
+mount -a 2>/dev/null || true
+# apply system tuning; KiniNi defaults live in /usr/lib/sysctl.d
+# (CachyOS-inspired: 70-kinini-settings.conf)
+for f in /usr/lib/sysctl.d/*.conf /etc/sysctl.d/*.conf; do
+        [ -f "$f" ] || continue
+        [ -x /usr/bin/sysctl ] && sysctl -q -e -p "$f" >/dev/null 2>&1 \
+                || true
+done
+# transparent hugepage defrag (CachyOS usr/lib/tmpfiles.d/thp.conf)
+[ -w /sys/kernel/mm/transparent_hugepage/defrag ] && \
+        echo defer+madvise > /sys/kernel/mm/transparent_hugepage/defrag \
+        2>/dev/null || true
+# compressed RAM swap (CachyOS-style), see /etc/kinini/zram.conf;
+# runs after the sysctl pass because it raises vm.swappiness
+[ -x /usr/sbin/zram-swap ] && /usr/sbin/zram-swap start 2>/dev/null || true
 swapon -a 2>/dev/null
 [ -f /etc/hostname ] && hostname "$(cat /etc/hostname)" 2>/dev/null
 ip link set up dev lo 2>/dev/null

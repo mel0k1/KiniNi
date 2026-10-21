@@ -1,4 +1,5 @@
 #!/bin/sh
+[ -x /usr/sbin/zram-swap ] && /usr/sbin/zram-swap stop 2>/dev/null || true
 swapoff -a 2>/dev/null
 umount -a -r -t nosysfs,noproc,nodevtmpfs,notmpfs 2>/dev/null
 sync
