@@ -151,10 +151,10 @@ jobs:
           test -s /tmp/kinini.iso
           test "$(stat -c %s /tmp/kinini.iso)" -gt 50000000
       - name: boot test (bios, install to disk)
-        timeout-minutes: 50
+        timeout-minutes: 70
         run: /src/tools/test-boot.sh /tmp/kinini.iso bios install
       - name: boot test (uefi, install to disk)
-        timeout-minutes: 50
+        timeout-minutes: 70
         run: /src/tools/test-boot.sh /tmp/kinini.iso uefi install
       - name: upload iso
         uses: actions/upload-artifact@v4

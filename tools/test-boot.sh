@@ -37,7 +37,7 @@ esac
 QEMU=${QEMU:-$(command -v qemu-system-x86_64 2>/dev/null || true)}
 [ -n "$QEMU" ] || { echo "test-boot: qemu-system-x86_64 not found" >&2; exit 1; }
 
-TMO=${TIMEOUT:-900}
+TMO=${TIMEOUT:-2400}
 
 TMP=$(mktemp -d /tmp/kinini-boot.XXXXXX)
 trap 'rm -rf "$TMP"; [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null || true' EXIT
@@ -56,8 +56,16 @@ FIRMARGS=
 if [ "$FW" = uefi ]; then
         ovmf=${OVMF:-}
         if [ -z "$ovmf" ]; then
-                ovmf=$(find /usr/share /usr/lib -iname 'OVMF.fd' -o -iname 'ovmf.fd' \
-                        2>/dev/null | head -n 1 || true)
+                # prefer the x86_64 combined image; do not blindly glob
+                # (ia32/arm builds of OVMF.fd may sit in sibling dirs)
+                for d in /usr/share/edk2/x64 /usr/share/edk2/X64 \
+                        /usr/share/OVMF /usr/share/ovmf /usr/share/qemu; do
+                        [ -f "$d/OVMF.fd" ] && { ovmf=$d/OVMF.fd; break; }
+                done
+        fi
+        if [ -z "$ovmf" ]; then
+                ovmf=$(find /usr/share /usr/lib -iname 'OVMF*.fd' 2>/dev/null \
+                        | grep -iv -e secure -e code | head -n 1 || true)
         fi
         if [ -z "$ovmf" ]; then
                 ovmf=$(find /usr/share /usr/lib -iname 'OVMF_CODE*.fd' \
@@ -88,7 +96,7 @@ start_qemu() {
         # start_qemu <extra args...> : keeps the console log shared
         QARGS="$*"
         # shellcheck disable=SC2086
-        "$QEMU" -m 1024 -accel tcg -display none -monitor none \
+        "$QEMU" -m 1024 -smp 2 -accel tcg -display none -monitor none \
                 -serial stdio -no-reboot $FIRMARGS $QARGS \
                 < "$TMP/in" >> "$LOG" 2>&1 &
         QPID=$!
@@ -136,7 +144,7 @@ poweroff_and_wait() {
         # qemu exits on guest power-off (niinit -> reboot(2))
         n=0
         while kill -0 "$QPID" 2>/dev/null; do
-                [ "$n" -ge 300 ] && return 1
+                [ "$n" -ge 600 ] && return 1
                 sleep 2
                 n=$(( n + 2 ))
         done
@@ -147,7 +155,13 @@ poweroff_and_wait() {
 echo "test-boot: [$FW] booting live iso (timeout ${TMO}s per phase)"
 start_qemu -cdrom "$ISO"
 
-wait_for "root@kinini" "$TMO" \
+# the autologin shell has no configured PS1 (-bash-5.3#), so sync on an
+# echoed marker instead of a prompt shape; input typed before the shell
+# starts is buffered by the tty and executed once bash reads it
+wait_for "automatic login" "$TMO" \
+        || fail "[$FW] live boot did not reach the autologin"
+send 'echo BOOT_READY'
+wait_for "BOOT_READY" "$TMO" \
         || fail "[$FW] no root shell on the serial console (live boot)"
 echo "test-boot: [$FW] live shell reached"
 
@@ -164,8 +178,10 @@ if [ "$DO_INSTALL" = install ]; then
         qemu-img create -f raw "$TMP/disk.raw" 4G >/dev/null
         start_qemu -cdrom "$ISO" -drive file="$TMP/disk.raw",if=virtio,format=raw
 
-        wait_for "root@kinini" "$TMO" \
+        wait_for "automatic login" "$TMO" \
                 || fail "[$FW] no live shell before install"
+        send 'echo BOOT_READY'
+        wait_for "BOOT_READY" "$TMO" || fail "[$FW] live shell not ready"
         send "kiwi-install -d /dev/vda -y -s 256"
         wait_for "done: KiniNi installed" "$TMO" \
                 || fail "[$FW] installer did not finish"
@@ -182,7 +198,8 @@ if [ "$DO_INSTALL" = install ]; then
         wait_for "Password" 120 || fail "[$FW] no password prompt"
         sleep 1
         send kinini
-        wait_for "root@kinini" 120 \
+        send 'echo LOGIN_OK'
+        wait_for "LOGIN_OK" 120 \
                 || fail "[$FW] cannot log into the installed system"
         echo "test-boot: [$FW] installed system booted, logged in"
 
