@@ -14,8 +14,12 @@ command -v xbps-install >/dev/null || {
 
 TARGET=$(readlink -f "$1")
 REPO=${2:-https://repo-default.voidlinux.org/current}
-shift 2 2>/dev/null || shift 1
-PKGS=${*:-base-system}
+if [ $# -ge 3 ]; then
+        shift 2
+        PKGS=$*
+else
+        PKGS=base-system
+fi
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 
 mkdir -p "$TARGET/var/db/xbps" "$TARGET/var/cache/xbps" "$TARGET/etc" "$TARGET/etc/xbps.d"
