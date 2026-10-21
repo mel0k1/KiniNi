@@ -9,7 +9,7 @@ mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm
 mountpoint -q /run     || mount -t tmpfs run /run
 [ -x /usr/bin/udevd ] && udevd --daemon
 swapon -a 2>/dev/null
-hostname -F /etc/hostname 2>/dev/null
+[ -f /etc/hostname ] && hostname "$(cat /etc/hostname)" 2>/dev/null
 ip link set up dev lo 2>/dev/null
 [ -f /etc/random-seed ] && cat /etc/random-seed > /dev/urandom
 exit 0
