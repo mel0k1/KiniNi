@@ -547,7 +547,6 @@ if [ "$UEFI" = 1 ]; then
                 -no-emul-boot -boot-load-size 4 -boot-info-table \
                 -eltorito-alt-boot \
                 -e '--interval:appended_partition_2:::' -no-emul-boot \
-                -isohybrid-gpt-bapadera \
                 -append_partition 2 0xef "$WORK/efiboot.img" \
                 -o "$OUT" "$ISOT"
 else
