@@ -40,13 +40,14 @@ and surprisingly resilient. The ASCII bird greets you on every console via
 
 | Component | What it is | Language |
 |-----------|------------|----------|
-| **niinit** | PID 1: three-stage boot (like runit), orphan reaping, reboot/poweroff signaling | C99 |
-| **niinit-sv** | Per-service supervisor: restart on crash, control FIFO, `stat`/`pid` files | C99 |
+| **niinit** | PID 1: three-stage boot (like runit), orphan reaping, reboot/poweroff/halt signaling | C99 |
+| **niinit-sv** | Per-service supervisor: restart on crash, `finish` scripts, `down` files, runit-compatible control FIFO (`u d o t k p c h a i q 1 2 x`), `stat`/`pid` files | C99 |
 | **niinit-svdir** | Watches `/etc/niinit/services`, spawns/stops supervisors as dirs appear/vanish | C99 |
-| **svctl** | `status` / `up` / `down` / `restart` / `kill`; doubles as `reboot`/`poweroff` | C99 |
+| **svctl** | `status` (with uptime) / `up` / `down` / `start` / `stop` / `restart` / `once` / `pause` / `cont` / signals / `check` / `enable` / `disable`; doubles as `reboot`/`poweroff`/`halt` | C99 |
 | **kipki** | Package manager on libxbps: transactions, search, orphans, holds, local log | C + libxbps |
 | **mkrootfs** | Builds a rootfs from Void repositories | POSIX sh |
-| **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux, overlayfs root | POSIX sh |
+| **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux, overlayfs root, disk installer on board | POSIX sh |
+| **kiwi-install** | Disk installer: partitions, copies the live system, writes fstab and an extlinux bootloader | POSIX sh |
 
 ## Quick start
 
@@ -84,13 +85,13 @@ BIOS boot and `isohybrid` so the same image also boots from a USB stick:
 IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
         https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch
 
-./tools/mkiso.sh /tmp/rootfs kinini-0.1-x86_64.iso
+./tools/mkiso.sh /tmp/rootfs kinini-0.2-x86_64.iso
 ```
 
 Test it in qemu:
 
 ```sh
-qemu-system-x86_64 -m 1024 -cdrom kinini-0.1-x86_64.iso -boot d
+qemu-system-x86_64 -m 1024 -cdrom kinini-0.2-x86_64.iso -boot d
 ```
 
 The live session autologs in on tty1 and greets you with the bird:
@@ -143,42 +144,71 @@ as an optional service — disabled by default, no host keys are generated
 until you turn it on:
 
 ```sh
-cp -a /etc/niinit/services-available/sshd /etc/niinit/services/
-svctl up sshd          # svdir notices the new dir within 5s
+svctl enable sshd       # symlink from services-available, svdir picks it up in <=5s
+svctl start sshd        # waits until it is actually up
 ```
 
+`svctl enable/disable` manage those symlinks for you; the supervisor honors
+runit conventions: a `down` file in a service dir prevents auto-start at
+boot, and a `finish` script runs after each service exit with the exit code
+and terminating signal as arguments.
+
 ```sh
-svctl status               # overview of all services
-svctl restart sshd         # up / down / restart / kill
+svctl status               # overview with pid and uptime
+svctl restart sshd         # up / down / start / stop / restart / once
+svctl pause sshd           # SIGSTOP / SIGCONT (cont)
+hup, alarm, int, quit, usr1, usr2, term  # raw signals to the service
+svctl check sshd           # exit 0 only if up (waits up to -w SEC)
 reboot                     # svctl in disguise: signals PID 1
 poweroff                   # same story
+halt                       # and even that
 ```
 
 The boot itself is three stages, exactly like runit: `/etc/niinit/1` mounts
 pseudo-filesystems and brings up udev and loopback, stage 2 supervises
 services until shutdown, and `/etc/niinit/3` unmounts everything back.
+PID 1 gives every process a grace period to exit on TERM before the final
+KILL, then runs stage 3.
+
+## Installing to disk
+
+The live ISO ships a complete installer. Boot the ISO and run as root:
+
+```sh
+kiwi-install -d /dev/sda -y
+```
+
+It partitions the disk (one bootable ext4 root), copies the live system,
+restores the standard gettys (no autologin on a real install), writes an
+`/etc/fstab` and installs an offline extlinux (BIOS) bootloader from the
+`syslinux` package that ships inside the ISO — no network needed. The root
+password stays `kinini` until you change it (`passwd`).
+
+Without `-y` the installer lists disks, asks for confirmation and offers to
+set the root password interactively. After it finishes, remove the medium
+and reboot straight into the installed system — the ISO has been verified
+to install and boot in qemu end to end (install → boot → login → clean
+poweroff).
+
+> BIOS/extlinux only for now; UEFI and swap setup are on the roadmap.
 
 ## Booting
 
-For a disk install, point any Linux kernel and bootloader (GRUB, syslinux,
-EFISTUB) at the rootfs — `/sbin/init` is a symlink to `niinit`, so no special
-kernel arguments are needed (pass `init=/sbin/niinit` if you prefer to be
-explicit):
-
-```
-root=UUID=... rw
-```
-
-Or skip the manual assembly entirely and use the live ISO above.
+For a manual install, point any Linux kernel and bootloader (GRUB, syslinux,
+EFISTUB) at the rootfs — `/sbin/init` is a symlink to `niinit`, so pass
+`root=UUID=... rw` and optionally `init=/sbin/niinit` if you prefer to be
+explicit. Or skip the manual assembly entirely and use `kiwi-install` from
+the live ISO above.
 
 ## CI
 
 Every push runs three Void Linux container jobs: one builds both components
-and smoke-tests the supervisor lifecycle (up → down → up through the control
-FIFO), the second builds a full rootfs from live Void repositories and
-verifies the resulting tree byte by byte, and the third builds the complete
-live ISO (including a static busybox compiled from source) and uploads it as
-a workflow artifact.
+and runs the supervisor test suite (up/down/restart/once, `down` files,
+`finish` scripts, crash restart, start/stop/check, enable/disable, signals,
+supervisor exit, plus the `svdir` spawn/stop cycle), the second builds a full
+rootfs from live Void repositories and verifies the resulting tree byte by
+byte, and the third builds the complete live ISO (including a static busybox
+compiled from source) and uploads it as a workflow artifact.
 
 ## Mascot
 
@@ -203,16 +233,21 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 **Состав:**
 
 - `niinit` — свой init в стиле runit (три стадии, супервизия сервисов,
-  сироты-процессы не остаются);
+  сироты-процессы не остаются); runit-совместимый control-FIFO
+  (`u d o t k p c h a i q 1 2 x`), `finish`-скрипты, `down`-файлы;
 - `niinit-sv` / `niinit-svdir` / `svctl` — супервизоры и управление:
-  рестарт при падении, control-FIFO, `svctl status|up|down|restart`,
-  а также `reboot`/`poweroff`;
+  рестарт при падении, `svctl status|up|down|start|stop|restart|once|pause|
+  cont|hup|usr1|usr2|term|check|enable|disable`, `status` показывает pid и
+  uptime, а также `reboot`/`poweroff`/`halt`; PID 1 даёт процессам grace-период
+  на корректный выход перед KILL;
 - `kipki` — пакетный менеджер на libxbps: транзакции с предпросмотром,
   поиск, сироты, hold, локальный журнал операций;
 - `tools/mkrootfs.sh` — сборка корня из репозиториев Void;
 - `tools/mkiso.sh` — загрузочный live-ISO: ядро 6.12, initramfs на busybox,
   isolinux + isohybrid, корень на overlayfs; sshd лежит в
   `services-available` и по умолчанию выключен;
+- `tools/kiwi-install` — установщик на диск: разметка, копирование live-
+  системы, fstab и extlinux (BIOS) без сети, прямо из ISO;
 - маскот — птичка киви, ASCII-арт устанавливается в
   `/usr/share/kinini/kiwi.txt` и показывается `fastfetch`.
 
@@ -222,10 +257,14 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 `voidlinux/voidlinux`, от root).
 
 **Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
-https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch`,
+https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux`,
 затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`.
 
+**Установка на диск:** загрузите ISO и выполните `kiwi-install -d /dev/sda -y`
+— разметка, копирование системы, fstab и extlinux без сети; проверено
+end-to-end в QEMU (установка → загрузка с диска → вход → чистый poweroff).
+
 **Загрузка:** `/sbin/init` — симлинк на `niinit`, так что достаточно любого
-ядра и загрузчика; либо просто загрузите live-ISO.
+ядра и загрузчика; либо просто установите систему через `kiwi-install`.
 
 **Лицензия:** BSD-2-Clause.
