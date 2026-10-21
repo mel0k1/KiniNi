@@ -105,11 +105,12 @@ jobs:
             openssl-devel git cpio gzip xorriso syslinux findutils zstd wget
       - name: build static busybox
         run: |
-          wget -q https://busybox.net/downloads/busybox-1.36.1.tar.bz2
-          tar xf busybox-1.36.1.tar.bz2
-          cd busybox-1.36.1
+          wget -q https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+          tar xf busybox-1.37.0.tar.bz2
+          cd busybox-1.37.0
           make defconfig
-          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i -e 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+                 -e 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
           make -j"$(nproc)" >/dev/null
           echo "BUSYBOX=$PWD/busybox" >> "$GITHUB_ENV"
       - name: clone
