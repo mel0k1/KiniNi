@@ -293,6 +293,15 @@ verify)
                                 sleep 4
                                 fail "grub rescue instead of the LUKS prompt (grub ls output above)"
                         fi
+                        if grep -qs "not found, dropping to shell" "$LOG"; then
+                                send 'ls /dev/vda* 2>&1'
+                                send 'cat /proc/cmdline'
+                                send 'cryptsetup luksUUID /dev/vda2; echo rc2=$?'
+                                send 'cryptsetup luksUUID /dev/vda3; echo rc3=$?'
+                                send 'ls /usr/lib | head -8'
+                                sleep 4
+                                fail "initramfs could not find the LUKS container (diag above)"
+                        fi
                         if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
                                 fail "qemu exited early (waiting for: luks passphrase)"
                         fi
