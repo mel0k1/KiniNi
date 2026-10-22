@@ -171,9 +171,14 @@ printf '#!/bin/sh\nexec agetty -a root -L ttyS0 115200 vt100\n' \
         > "$ISOT/rootfs/etc/niinit/services/getty-ttyS0/run"
 chmod +x "$ISOT/rootfs/etc/niinit/services/getty-ttyS0/run"
 # enable DHCP on the live system (network for kipki out of the box);
-# the installed system chooses during kiwi-install
+# the installed system chooses during kiwi-install. a real directory
+# copy, not a symlink: symlinked service dirs in the iso9660 lower
+# layer of the live overlay do not survive the supervisor's spawn
+# (real dirs demonstrably do - getty-ttyS0). on the installed ext4
+# root kiwi-install keeps using symlinks, where they work.
 if [ -d "$ISOT/rootfs/etc/niinit/services-available/dhcpcd" ]; then
-        ln -sfn /etc/niinit/services-available/dhcpcd \
+        rm -rf "$ISOT/rootfs/etc/niinit/services/dhcpcd"
+        cp -a "$ISOT/rootfs/etc/niinit/services-available/dhcpcd" \
                 "$ISOT/rootfs/etc/niinit/services/dhcpcd"
 fi
 ln -sf niinit "$ISOT/rootfs/sbin/init"
