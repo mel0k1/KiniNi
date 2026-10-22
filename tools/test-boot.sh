@@ -183,9 +183,12 @@ poweroff_and_wait() {
 
 wait_live_shell() {
         # the autologin shell has no configured PS1 (-bash-5.3#), so sync
-        # on an echoed marker instead of a prompt shape
+        # on an echoed marker instead of a prompt shape. markers are built
+        # with a split string ("X""_OK") so the tty echo of the typed
+        # command never contains the literal marker - wait_for must only
+        # ever match the command's real output, not its echo.
         wait_for "automatic login" "waiting for live boot"
-        send 'echo BOOT_READY'
+        send 'echo "BOOT""_READY"'
         wait_for "BOOT_READY" "waiting for live shell"
         echo "test-boot: [$FW] live shell reached"
         wait_for "zram-swap" "waiting for zram-swap hook"
@@ -201,19 +204,20 @@ wait_installed_shell() {
         # login flushes the pending tty input when handing over to the
         # shell, so sync on the prompt shape before sending markers
         wait_for "bash-5" "waiting for the post-login shell"
-        send 'echo LOGIN_OK'
+        send 'echo "LOGIN""_OK"'
         wait_for "LOGIN_OK" "waiting for login"
         echo "test-boot: [$FW] installed system booted, logged in"
 }
 
 check_basic_tuning() {
-        send 'uname -r | grep -q kinini && echo KVER_OK'
+        send 'uname -r | grep -q kinini && echo "KVER""_OK"'
         wait_for "KVER_OK" "waiting for the kinini kernel check"
-        send 'grep -qs zram0 /proc/swaps && echo ZRAM_OK'
+        send 'grep -qs zram0 /proc/swaps && echo "ZRAM""_OK"'
         wait_for "ZRAM_OK" "waiting for zram check"
-        send 'sysctl -n vm.swappiness | grep -qx 150 && echo TUNE_OK'
+        send 'sysctl -n vm.swappiness | grep -qx 150 && echo "TUNE""_OK"'
         wait_for "TUNE_OK" "waiting for swappiness check"
-        send 'ip -4 addr | grep -q 10.0.2. && echo DHCP_OK'
+        # dhcpcd may need a few seconds after the interface comes up
+        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 45 ] && break; sleep 2; done; ip -4 addr | grep -q 10.0.2. && echo "DHCP""_OK"'
         wait_for "DHCP_OK" "waiting for DHCP lease"
         echo "test-boot: [$FW] kinini kernel + zram + tuning + DHCP verified"
 }
@@ -254,20 +258,20 @@ verify)
         wait_installed_shell
         check_basic_tuning
         if [ "$SCENARIO" = luks ]; then
-                send 'test -b /dev/mapper/kinini && echo LUKSDEV_OK'
+                send 'test -b /dev/mapper/kinini && echo "LUKSDEV""_OK"'
                 wait_for "LUKSDEV_OK" "waiting for the LUKS device check"
-                send 'readlink /etc/localtime | grep -q Europe/Moscow && echo TZ_OK'
+                send 'readlink /etc/localtime | grep -q Europe/Moscow && echo "TZ""_OK"'
                 wait_for "TZ_OK" "waiting for the timezone check"
                 # shellcheck disable=SC2016
-                send 'echo "LANG=$LANG" | grep -q ru_RU.UTF-8 && echo LOC_OK'
+                send 'echo "LANG=$LANG" | grep -q ru_RU.UTF-8 && echo "LOC""_OK"'
                 wait_for "LOC_OK" "waiting for the locale check"
-                send 'locale -a 2>/dev/null | grep -qi ru_RU && echo LOCGEN_OK'
+                send 'locale -a 2>/dev/null | grep -qi ru_RU && echo "LOCGEN""_OK"'
                 wait_for "LOCGEN_OK" "waiting for the locale generation check"
-                send 'grep -qs "mapper/swap" /proc/swaps && echo SWAPENC_OK'
+                send 'grep -qs "mapper/swap" /proc/swaps && echo "SWAPENC""_OK"'
                 wait_for "SWAPENC_OK" "waiting for the encrypted swap check"
-                send 'dmesg | grep -q "sched_ext.*enabled" && echo SCX_OK || { dmesg | grep -i sched_ext | tail -3; false; }'
+                send 'dmesg | grep -q "sched_ext.*enabled" && echo "SCX""_OK" || { dmesg | grep -i sched_ext | tail -3; false; }'
                 wait_for "SCX_OK" "waiting for the sched_ext scheduler check"
-                send 'grep -qs up /etc/niinit/services/scx/stat && echo SCXUP_OK'
+                send 'grep -qs up /etc/niinit/services/scx/stat && echo "SCXUP""_OK"'
                 wait_for "SCXUP_OK" "waiting for the scx service state check"
                 echo "test-boot: [$FW] LUKS + timezone + locale + scx verified"
         fi

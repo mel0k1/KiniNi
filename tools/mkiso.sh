@@ -135,6 +135,17 @@ KCFG=$ROOT/boot/config-$KVER
 echo "mkiso: kernel $KVER"
 echo "mkiso: toolchain $MKISO + isolinux from $(dirname "$ISOLINUX_BIN")"
 
+# the disk installer boots the KiniNi kernel when it was staged into the
+# rootfs (CI runs tools/mkkernel.sh); that kernel has every driver the
+# initramfs needs built in, so the disk initramfs ships no modules at
+# all - void-kernel modules would not even load (struct module size
+# mismatch). only the live-kernel fallback path needs modules.
+KININI_STAGED=0
+if [ -f "$ROOT/usr/lib/kinini/vmlinuz-kinini" ] \
+        && [ -f "$ROOT/usr/lib/kinini/kver" ]; then
+        KININI_STAGED=1
+fi
+
 # the disk installer needs these at runtime
 for f in "$ROOT/usr/bin/extlinux" "$ROOT/usr/lib/syslinux/mbr.bin" \
         "$ROOT/usr/lib/syslinux/ldlinux.c32"; do
@@ -344,10 +355,14 @@ mkdir -p "$DINITRD/bin" "$DINITRD/modules" "$DINITRD/newroot" "$DINITRD/proc" \
         "$DINITRD/sys" "$DINITRD/dev"
 cp "$BUSYBOX" "$DINITRD/bin/busybox"
 chmod 755 "$DINITRD/bin/busybox"
-# shellcheck disable=SC2086
-copy_modules "$DINITRD/modules" $DISKMODS
-DMOD=$(find "$DINITRD/modules" -type f 2>/dev/null | wc -l)
-echo "mkiso: disk initramfs modules: $DMOD"
+if [ "$KININI_STAGED" = 1 ]; then
+        echo "mkiso: disk initramfs: no kernel modules (KiniNi kernel has all drivers built in)"
+else
+        # shellcheck disable=SC2086
+        copy_modules "$DINITRD/modules" $DISKMODS
+        DMOD=$(find "$DINITRD/modules" -type f 2>/dev/null | wc -l)
+        echo "mkiso: disk initramfs modules: $DMOD"
+fi
 
 cat > "$DINITRD/init" <<'EOF'
 #!/bin/busybox sh
