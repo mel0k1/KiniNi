@@ -541,13 +541,13 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
                 esac
                 cp -L "$path" "$DINITRD/usr/lib/$soname"
         done
-        # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2:
-        # the loader must exist at that exact path too, or the kernel's
-        # execve of cryptsetup fails with ENOENT (silently eaten by the
-        # init's 2>/dev/null)
-        mkdir -p "$DINITRD/lib64"
+        # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2 and
+        # the loader finds libraries through its default dirs (/lib,
+        # /usr/lib) - mirror the rootfs layout so both the PT_INTERP and
+        # plain execve work without relying on LD_LIBRARY_PATH
         cp -L "$ROOT/usr/lib/ld-linux-x86-64.so.2" \
-                "$DINITRD/lib64/ld-linux-x86-64.so.2"
+                "$DINITRD/usr/lib/ld-linux-x86-64.so.2"
+        ln -s usr/lib "$DINITRD/lib" "$DINITRD/lib64"
         # verify the closure by executing cryptsetup the way the guest
         # kernel would (through PT_INTERP inside the chroot); fall back
         # to an explicit-loader check when chroot is unavailable
