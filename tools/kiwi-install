@@ -642,26 +642,29 @@ EOF
         # /.kinini-live marker and reads /boot/grub/grub.cfg from it
         : > "$TARGET/.kinini-live"
 
-        # stage the kernel, the initramfs and a grub.cfg on the ESP as
-        # well: with a LUKS root grub (no cryptodisk) cannot read the
-        # marker nor /boot, and BOOTX64.EFI falls back to the ESP it was
-        # loaded from. one passphrase total - typed in the initramfs.
+        # mirror the /boot layout onto the ESP and mark it: grub (no
+        # cryptodisk) cannot read a LUKS root, so the early config's
+        # marker search must be able to land on the ESP, where the
+        # kernel, the initramfs and grub.cfg live. one passphrase
+        # total - typed in the initramfs. on a plain install both the
+        # root and the ESP carry the marker; either boots completely.
         msg "staging kernel + initramfs + grub.cfg on the ESP"
         mkdir -p "$TARGET/boot/efi/EFI/BOOT" "$TARGET/boot/efi/EFI/kinini" \
-                "$TARGET/boot/efi/kinini"
+                "$TARGET/boot/efi/boot"
         cp "$TARGET/boot/vmlinuz-$KVER" \
-                "$TARGET/boot/efi/kinini/vmlinuz-$KVER"
+                "$TARGET/boot/efi/boot/vmlinuz-$KVER"
         cp "$TARGET/boot/initramfs.img" \
-                "$TARGET/boot/efi/kinini/initramfs.img"
-        cat > "$TARGET/boot/efi/EFI/BOOT/grub.cfg" <<EOF
+                "$TARGET/boot/efi/boot/initramfs.img"
+        cat > "$TARGET/boot/efi/boot/grub.cfg" <<EOF
 set timeout=3
 set default=0
 
 menuentry "KiniNi Linux" {
-    linux /kinini/vmlinuz-$KVER $KCMD
-    initrd /kinini/initramfs.img
+    linux /boot/vmlinuz-$KVER $KCMD
+    initrd /boot/initramfs.img
 }
 EOF
+        : > "$TARGET/boot/efi/.kinini-live"
 
         msg "installing grub EFI loader on the ESP"
         install -m755 /usr/lib/kinini/BOOTX64.EFI \
