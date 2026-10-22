@@ -126,9 +126,9 @@ jobs:
           xbps-install -y -Su xbps
           xbps-install -y -u
           xbps-install -y gcc make pkg-config libxbps-devel libarchive-devel \
-            openssl-devel git cpio gzip xorriso syslinux findutils zstd wget \
+            openssl-devel git cpio xorriso syslinux zstd wget \
             mtools dosfstools grub grub-x86_64-efi edk2-ovmf qemu-img \
-            flex bison bc dwarves libelf-devel perl
+            flex bison bc pahole libelf-devel perl
           xbps-install -y qemu-system-amd64 || xbps-install -y qemu-system-x86_64
       - name: build static busybox
         run: |

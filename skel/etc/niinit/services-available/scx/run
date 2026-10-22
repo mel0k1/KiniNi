@@ -6,7 +6,7 @@
 #
 # runs the scheduler in the foreground under the niinit supervisor,
 # exactly like CachyOS' scx_loader would, minus the D-Bus dependency.
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC1091
 [ -f /etc/kinini/scx.conf ] && . /etc/kinini/scx.conf
 [ -x /usr/bin/modprobe ] && modprobe -q sched_ext 2>/dev/null
 mountpoint -q /sys/fs/bpf 2>/dev/null || mount -t bpf bpf /sys/fs/bpf 2>/dev/null

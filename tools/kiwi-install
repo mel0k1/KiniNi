@@ -250,7 +250,8 @@ es_ES.UTF-8 it_IT.UTF-8 pl_PL.UTF-8 uk_UA.UTF-8"
 
 pick_sched() {
         # list scx schedulers present in the live image (skip tools)
-        SCXS=$(ls /usr/bin/scx_* 2>/dev/null | sed 's|.*/||' \
+        SCXS=$(find /usr/bin -maxdepth 1 -name 'scx_*' 2>/dev/null \
+                | sed 's|.*/||' \
                 | grep -v -e '^scx_loader$' -e '^scxctl$' -e '^scx-' \
                 | sort -u)
         [ -n "$SCXS" ] || { SCHED=none; return; }
