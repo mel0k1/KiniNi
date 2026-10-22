@@ -547,7 +547,8 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         # plain execve work without relying on LD_LIBRARY_PATH
         cp -L "$ROOT/usr/lib/ld-linux-x86-64.so.2" \
                 "$DINITRD/usr/lib/ld-linux-x86-64.so.2"
-        ln -s usr/lib "$DINITRD/lib" "$DINITRD/lib64"
+        ln -s usr/lib "$DINITRD/lib"
+        ln -s usr/lib "$DINITRD/lib64"
         # verify the closure by executing cryptsetup the way the guest
         # kernel would (through PT_INTERP inside the chroot); fall back
         # to an explicit-loader check when chroot is unavailable
