@@ -140,7 +140,8 @@ wait_for() {
         what=$2
         start=$(date +%s)
         while :; do
-                if grep -qs "$pat" "$LOG"; then
+                # -e: the pattern may start with a dash (prompt shapes)
+                if grep -qs -e "$pat" "$LOG"; then
                         return 0
                 fi
                 if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
@@ -207,7 +208,7 @@ verify)
         send kinini
         # login flushes the pending tty input when handing over to the
         # shell, so sync on the prompt shape before sending markers
-        wait_for "-bash-" "waiting for the post-login shell"
+        wait_for "bash-5" "waiting for the post-login shell"
         send 'echo LOGIN_OK'
         wait_for "LOGIN_OK" "waiting for login"
         echo "test-boot: [$FW] installed system booted, logged in"
