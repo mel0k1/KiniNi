@@ -84,8 +84,8 @@ LOG=$TMP/serial.log
 
 fail() {
         echo "test-boot: FAIL: $*" >&2
-        echo "----- last 40 lines of the console log -----" >&2
-        tail -40 "$LOG" >&2 || true
+        echo "----- last 70 lines of the console log -----" >&2
+        tail -70 "$LOG" >&2 || true
         exit 1
 }
 
@@ -216,10 +216,28 @@ check_basic_tuning() {
         wait_for "ZRAM_OK" "waiting for zram check"
         send 'sysctl -n vm.swappiness | grep -qx 150 && echo "TUNE""_OK"'
         wait_for "TUNE_OK" "waiting for swappiness check"
-        # dhcpcd may need a few seconds after the interface comes up
-        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 45 ] && break; sleep 2; done; ip -4 addr | grep -q 10.0.2. && echo "DHCP""_OK"'
-        wait_for "DHCP_OK" "waiting for DHCP lease"
-        echo "test-boot: [$FW] kinini kernel + zram + tuning + DHCP verified"
+        dhcp_check
+}
+
+# wait for a SLIRP DHCP lease (dhcpcd -M runs from the niinit service).
+# bounded in the guest: after 90s without a lease the guest prints a
+# diagnostics block (interfaces, packet counters, service state, dmesg)
+# and the harness fails immediately after seeing its END marker.
+dhcp_check() {
+        # shellcheck disable=SC2016  # the whole command runs in the guest
+        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 45 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr; ip link; cat /proc/net/dev; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; cat /etc/niinit/services/dhcpcd/stat 2>/dev/null; dmesg | grep -iE "e1000|virtio_net|enp|eth" | tail -12; echo "=== END ""DIAG ==="; fi'
+        n=0
+        while [ "$n" -lt 75 ]; do
+                grep -qs "DHCP_OK" "$LOG" && {
+                        echo "test-boot: [$FW] DHCP lease verified"
+                        return 0
+                }
+                grep -qs "END DIAG" "$LOG" \
+                        && fail "no DHCP lease (diagnostics above in the console tail)"
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        fail "DHCP check inconclusive (no marker, no diagnostics)"
 }
 
 # ---------------------------------------------------------------- phases
@@ -228,6 +246,9 @@ boot)
         echo "test-boot: [$FW] booting live iso (timeout ${TMO}s per phase)"
         start_qemu -cdrom "$ISO"
         wait_live_shell
+        # baseline: the live system runs the Void kernel - a failed lease
+        # here points at the CI environment, not at the KiniNi kernel
+        dhcp_check
         poweroff_and_wait
         echo "test-boot: [$FW] live boot + poweroff OK"
         ;;
