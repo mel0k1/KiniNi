@@ -228,7 +228,7 @@ check_basic_tuning() {
 # and the harness fails immediately after seeing its END marker.
 dhcp_check() {
         # shellcheck disable=SC2016  # the whole command runs in the guest
-        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 14 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr; ip link; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; echo "stat=[$(cat /etc/niinit/services/dhcpcd/stat 2>/dev/null)]"; ls -la /usr/sbin/dhcpcd 2>&1; timeout 8 dhcpcd -B -M -d 2>&1 | head -20; ip -4 addr | grep -q 10.0.2. && echo "DHCP""_OK"; echo "DHCPD_DEBUG_DONE"; dmesg | grep -iE "e1000|virtio_net|enp|eth" | tail -8; echo "=== END ""DIAG ==="; fi'
+        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 14 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr | head -6; ip link | head -4; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; echo "stat=[$(cat /etc/niinit/services/dhcpcd/stat 2>/dev/null)]"; ls -la /etc/niinit/services/dhcpcd/ 2>&1 | head -8; head -c 120 /etc/niinit/services/dhcpcd/run | od -c | head -4; (timeout 5 /etc/niinit/services/dhcpcd/run >/tmp/runout 2>&1); echo "run_rc=$?"; head -10 /tmp/runout; timeout 8 dhcpcd -B -M -d 2>&1 | head -14; ip -4 addr | grep -q 10.0.2. && echo "DHCP""_OK"; echo "DHCPD_DEBUG_DONE"; echo "=== END ""DIAG ==="; fi'
         n=0
         while [ "$n" -lt 90 ]; do
                 grep -qs "DHCP_OK" "$LOG" && {

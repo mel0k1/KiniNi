@@ -32,6 +32,7 @@ static char statpath[640];
 static char pidpath[640];
 static pid_t svc_pid;
 static pid_t fin_pid;
+static int svclog_fd = -1;
 static int want_up;
 static int want_down;
 static int once_only;
@@ -137,8 +138,16 @@ static void start_svc(void)
                 int fd = open("/dev/null", O_RDWR);
                 if (fd >= 0) {
                         dup2(fd, 0);
-                        dup2(fd, 1);
-                        dup2(fd, 2);
+                        /* a service without its own logger must still be
+                         * debuggable: its output goes to the supervisor's
+                         * stderr (the console), not to /dev/null */
+                        if (svclog_fd >= 0) {
+                                dup2(svclog_fd, 1);
+                                dup2(svclog_fd, 2);
+                        } else {
+                                dup2(fd, 1);
+                                dup2(fd, 2);
+                        }
                         if (fd > 2)
                                 close(fd);
                 }
@@ -183,6 +192,10 @@ int main(int argc, char **argv)
                 fprintf(stderr, "usage: niinit-sv <servicedir>\n");
                 return 1;
         }
+
+        /* keep the supervisor's stderr alive for the services it spawns
+         * (start_svc dups it over the child's stdout/stderr) */
+        svclog_fd = dup(2);
 
         snprintf(dir, sizeof dir, "%s", argv[1]);
         snprintf(runpath, sizeof runpath, "%s/run", dir);
