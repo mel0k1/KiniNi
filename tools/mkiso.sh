@@ -523,9 +523,19 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         # then copy each library under its SONAME: cryptsetup's
         # DT_NEEDED entries are "libcryptsetup.so.12" style, while the
         # resolved paths carry full version suffixes
-        LIBS=$(LD_LIBRARY_PATH="$ROOT/usr/lib" \
-                "$ROOT/usr/lib/ld-linux-x86-64.so.2" --inhibit-cache --list "$CRYPTBIN" 2>/dev/null \
-                | sed -n 's|^[[:space:]]*\([^ /][^ ]*\) => \([^ ]*\) (0x[0-9a-f]*)$|\1\|\2|p')
+        if ! LD_LIBRARY_PATH="$ROOT/usr/lib" \
+                "$ROOT/usr/lib/ld-linux-x86-64.so.2" --inhibit-cache --list \
+                "$CRYPTBIN" > "$WORK/closure.txt" 2> "$WORK/closure.err"; then
+                echo "mkiso: closure --list failed:" >&2
+                cat "$WORK/closure.err" >&2
+                die "cannot resolve the cryptsetup closure"
+        fi
+        echo "mkiso: closure raw lines: $(wc -l < "$WORK/closure.txt")"
+        sed 's/^/mkiso: closure: /' "$WORK/closure.txt" >&2
+        LIBS=$(sed -n 's|^[[:space:]]*\([^ /][^ ]*\) => \([^ ]*\) (0x[0-9a-f]*)$|\1\|\2|p' \
+                "$WORK/closure.txt")
+        [ -n "$LIBS" ] || die "closure parse produced nothing (see raw lines above)"
+        echo "mkiso: closure libs parsed: $(printf '%s\n' "$LIBS" | wc -l)"
         # shellcheck disable=SC2086
         for pair in $LIBS; do
                 soname=${pair%%|*}
@@ -541,6 +551,8 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
                 esac
                 cp -L "$path" "$DINITRD/usr/lib/$soname"
         done
+        echo "mkiso: closure copied: $(find "$DINITRD/usr/lib" -type f | wc -l) files"
+        echo "mkiso: closure names: $(ls "$DINITRD/usr/lib" | tr '\n' ' ')"
         # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2 and
         # the loader finds libraries through its default dirs (/lib,
         # /usr/lib) - mirror the rootfs layout so both the PT_INTERP and
