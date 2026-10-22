@@ -537,12 +537,18 @@ if [ -n "$LOCALE" ]; then
                 sed -i "s|^#${LOCALE} |${LOCALE} |" \
                         "$TARGET/etc/default/libc-locales"
                 msg "generating locale data (glibc-locales)"
+                # xbps-reconfigure runs the glibc-locales install script
+                # which needs /proc, /dev (at least /dev/null) and /sys
                 mount -t proc proc "$TARGET/proc" 2>/dev/null || true
+                mount -o bind /dev "$TARGET/dev" 2>/dev/null || true
+                mount -t sysfs sys "$TARGET/sys" 2>/dev/null || true
                 chroot "$TARGET" /usr/bin/xbps-reconfigure -f glibc-locales \
-                        >/dev/null 2>&1 \
+                        > "$TARGET/var/log/locale-gen.log" 2>&1 \
                         || msg "warning: locale generation failed" \
-                               "(${LOCALE} stays ungenerated)"
-                umount "$TARGET/proc" 2>/dev/null || true
+                               "(${LOCALE} stays ungenerated; see" \
+                               "var/log/locale-gen.log)"
+                umount "$TARGET/sys" "$TARGET/dev" "$TARGET/proc" \
+                        2>/dev/null || true
         fi
 fi
 

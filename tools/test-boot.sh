@@ -294,12 +294,13 @@ verify)
                                 fail "grub rescue instead of the LUKS prompt (grub ls output above)"
                         fi
                         if grep -qs "not found, dropping to shell" "$LOG"; then
-                                send 'ls /dev/vda* 2>&1'
-                                send 'cat /proc/cmdline'
-                                send 'cryptsetup luksUUID /dev/vda2; echo rc2=$?'
-                                send 'cryptsetup luksUUID /dev/vda3; echo rc3=$?'
-                                send 'ls /usr/lib | head -8'
-                                sleep 4
+                                send '/bin/busybox ls -la /dev/vda* 2>&1 | head -12'
+                                send '/bin/busybox cat /proc/cmdline'
+                                send '/usr/bin/cryptsetup luksUUID /dev/vda1; echo rc1=$?'
+                                send '/usr/bin/cryptsetup luksUUID /dev/vda2; echo rc2=$?'
+                                send '/usr/bin/cryptsetup luksUUID /dev/vda3; echo rc3=$?'
+                                send '/bin/busybox ls /usr/bin /usr/lib 2>&1 | head -16'
+                                sleep 5
                                 fail "initramfs could not find the LUKS container (diag above)"
                         fi
                         if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
@@ -322,7 +323,7 @@ verify)
                 # shellcheck disable=SC2016
                 send 'echo "LANG=$LANG" | grep -q ru_RU.UTF-8 && echo "LOC""_OK"'
                 wait_for "LOC_OK" "waiting for the locale check"
-                send 'locale -a 2>/dev/null | grep -qi ru_RU && echo "LOCGEN""_OK"'
+                send 'locale -a 2>/dev/null | grep -qi ru_RU && echo "LOCGEN""_OK" || { echo "=== LOCGEN DIAG ==="; tail -5 /var/log/locale-gen.log 2>/dev/null; locale -a 2>/dev/null | head -5; }'
                 wait_for "LOCGEN_OK" "waiting for the locale generation check"
                 send 'grep -qs "mapper/swap" /proc/swaps && echo "SWAPENC""_OK"'
                 wait_for "SWAPENC_OK" "waiting for the encrypted swap check"
