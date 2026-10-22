@@ -163,6 +163,23 @@ jobs:
           install -Dm644 /tmp/kernel-out/kver /tmp/rootfs/usr/lib/kinini/kver
       - name: build iso
         run: /src/tools/mkiso.sh /tmp/rootfs /tmp/kinini.iso
+      - name: smoke kinini kernel (direct boot)
+        timeout-minutes: 10
+        run: |
+          xorriso -osirrox on -indev /tmp/kinini.iso \
+            -extract /rootfs/usr/lib/kinini/initramfs-disk.img /tmp/initrd-disk.img >/dev/null
+          out=$(timeout 120 qemu-system-x86_64 -m 512 -accel tcg -display none \
+            -monitor none -serial stdio -no-reboot \
+            -kernel /tmp/kernel-out/vmlinuz-kinini \
+            -initrd /tmp/initrd-disk.img \
+            -append "console=ttyS0,115200n8 earlyprintk=serial,ttyS0,115200" \
+            </dev/null 2>&1 | tail -80) || true
+          echo "$out"
+          echo "$out" | grep -q "Linux version 6.12.114-kinini" \
+            || { echo "smoke: kernel banner missing - the kernel does not boot"; exit 1; }
+          echo "$out" | grep -q "no root=" \
+            || { echo "smoke: initramfs did not reach the root check"; exit 1; }
+          echo "smoke: kinini kernel boots and talks over serial"
       - name: verify iso
         run: |
           test -s /tmp/kinini.iso

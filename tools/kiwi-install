@@ -620,9 +620,9 @@ chmod 644 "$TARGET/boot/vmlinuz-$KVER"
 cp /usr/lib/kinini/initramfs-disk.img "$TARGET/boot/initramfs.img"
 
 if [ "$LUKS" = 1 ]; then
-        KCMD="root=/dev/mapper/$LUKSNAME rd.luks.uuid=$LUKSUUID rw console=tty0 console=ttyS0,115200n8 loglevel=4"
+        KCMD="root=/dev/mapper/$LUKSNAME rd.luks.uuid=$LUKSUUID rw earlyprintk=serial,ttyS0,115200 console=tty0 console=ttyS0,115200n8 loglevel=4"
 else
-        KCMD="root=UUID=$UUID_ROOT rw console=tty0 console=ttyS0,115200n8 loglevel=4"
+        KCMD="root=UUID=$UUID_ROOT rw earlyprintk=serial,ttyS0,115200 console=tty0 console=ttyS0,115200n8 loglevel=4"
 fi
 
 if [ "$MODE" = uefi ]; then
@@ -651,12 +651,13 @@ else
         msg "writing extlinux boot sector"
         mkdir -p "$TARGET/boot/extlinux"
         cat > "$TARGET/boot/extlinux/extlinux.conf" <<EOF
+SERIAL 0 115200
 DEFAULT kinini
 PROMPT 0
 TIMEOUT 30
 
 LABEL kinini
-        KERNEL /boot/vmlinuz-$(uname -r)
+        KERNEL /boot/vmlinuz-$KVER
         INITRD /boot/initramfs.img
         APPEND $KCMD
 EOF
