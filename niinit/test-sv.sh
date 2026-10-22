@@ -114,6 +114,14 @@ echo "9. enable/disable: ok"
 
 # --- 10. signals reach the service (pause/cont via SIGSTOP proof)
 export NIINIT_SVDIR="$T"
+# the previous step left the service just spawned (or in the supervisor's
+# 1s respawn throttle) - wait for the pid file instead of racing it
+n=0
+until [ -s "$SVC/pid" ]; do
+        [ "$n" -lt 10 ] || fail "service pid never appeared after up"
+        sleep 0.5
+        n=$(( n + 1 ))
+done
 "$BIN/svctl" pause svc 2>/dev/null && true
 "$BIN/svctl" hup svc 2>/dev/null && true
 sleep 0.5
