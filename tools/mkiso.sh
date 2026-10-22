@@ -519,7 +519,7 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         cp "$CRYPTBIN" "$DINITRD/usr/bin/cryptsetup"
         chmod 755 "$DINITRD/usr/bin/cryptsetup"
         LIBS=$(LD_LIBRARY_PATH="$ROOT/usr/lib" \
-                "$ROOT/usr/lib/ld-linux-x86-64.so.2" --list "$CRYPTBIN" 2>/dev/null \
+                "$ROOT/usr/lib/ld-linux-x86-64.so.2" --inhibit-cache --list "$CRYPTBIN" 2>/dev/null \
                 | sed -n 's/.*=> \([^ ]*\).*/\1/p')
         # shellcheck disable=SC2086
         for lib in $LIBS "$ROOT/usr/lib/ld-linux-x86-64.so.2"; do
@@ -540,8 +540,10 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         # kernel would (through PT_INTERP inside the chroot); fall back
         # to an explicit-loader check when chroot is unavailable
         if [ "$(id -u)" = 0 ] && command -v chroot >/dev/null 2>&1; then
-                chroot "$DINITRD" /usr/bin/cryptsetup --version >/dev/null 2>&1 \
-                        || die "cryptsetup cannot exec inside the initramfs (PT_INTERP/paths)"
+                if ! COUT=$(chroot "$DINITRD" /usr/bin/cryptsetup --version 2>&1); then
+                        echo "mkiso: cryptsetup exec check output: $COUT" >&2
+                        die "cryptsetup cannot exec inside the initramfs"
+                fi
         elif ! LD_LIBRARY_PATH="$DINITRD/usr/lib" \
                 "$DINITRD/usr/lib/ld-linux-x86-64.so.2" --list \
                 "$DINITRD/usr/bin/cryptsetup" >/dev/null 2>&1; then
