@@ -530,6 +530,11 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         for pair in $LIBS; do
                 soname=${pair%%|*}
                 path=${pair#*|}
+                # skip the interpreter line(s): the loader is copied
+                # explicitly below, at the PT_INTERP path /lib64/...
+                case "$soname" in
+                */*)    continue ;;
+                esac
                 case "$path" in
                 "$ROOT"/*)      ;;
                 *)      die "cryptsetup lib outside the rootfs: $path" ;;
