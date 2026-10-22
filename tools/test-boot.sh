@@ -191,6 +191,10 @@ wait_live_shell() {
         # command never contains the literal marker - wait_for must only
         # ever match the command's real output, not its echo.
         wait_for "automatic login" "waiting for live boot"
+        # login flushes pending tty input when handing over to the shell:
+        # typing too early races the flush - wait for the bash prompt
+        # shape before typing anything
+        wait_for "bash-5" "waiting for the live shell prompt"
         send 'echo "BOOT""_READY"'
         wait_for "BOOT_READY" "waiting for live shell"
         echo "test-boot: [$FW] live shell reached"
