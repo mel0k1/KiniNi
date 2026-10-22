@@ -518,16 +518,23 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         mkdir -p "$DINITRD/usr/bin" "$DINITRD/usr/lib"
         cp "$CRYPTBIN" "$DINITRD/usr/bin/cryptsetup"
         chmod 755 "$DINITRD/usr/bin/cryptsetup"
+        # resolve the transitive closure against the rootfs only (the
+        # loader would otherwise fall back to the build host's cache),
+        # then copy each library under its SONAME: cryptsetup's
+        # DT_NEEDED entries are "libcryptsetup.so.12" style, while the
+        # resolved paths carry full version suffixes
         LIBS=$(LD_LIBRARY_PATH="$ROOT/usr/lib" \
                 "$ROOT/usr/lib/ld-linux-x86-64.so.2" --inhibit-cache --list "$CRYPTBIN" 2>/dev/null \
-                | sed -n 's/.*=> \([^ ]*\).*/\1/p')
+                | sed -n 's|^[[:space:]]*\([^ /][^ ]*\) => \([^ ]*\) (0x[0-9a-f]*)$|\1\|\2|p')
         # shellcheck disable=SC2086
-        for lib in $LIBS "$ROOT/usr/lib/ld-linux-x86-64.so.2"; do
-                case "$lib" in
+        for pair in $LIBS; do
+                soname=${pair%%|*}
+                path=${pair#*|}
+                case "$path" in
                 "$ROOT"/*)      ;;
-                *)      die "cryptsetup lib outside the rootfs: $lib" ;;
+                *)      die "cryptsetup lib outside the rootfs: $path" ;;
                 esac
-                cp -L "$lib" "$DINITRD/usr/lib/$(basename "$lib")"
+                cp -L "$path" "$DINITRD/usr/lib/$soname"
         done
         # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2:
         # the loader must exist at that exact path too, or the kernel's
