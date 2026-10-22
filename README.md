@@ -47,8 +47,9 @@ and surprisingly resilient. The ASCII bird greets you on every console via
 | **kipki** | Package manager on libxbps: transactions, search, orphans, holds, local log | C + libxbps |
 | **mkrootfs** | Builds a rootfs from Void repositories | POSIX sh |
 | **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux + grub-efi (BIOS **and** UEFI), overlayfs root, disk installer on board | POSIX sh |
-| **kiwi-install** | Disk installer: partitions (msdos/GPT), copies the live system, swap partition, fstab, offline extlinux (BIOS) or grub-on-ESP (UEFI) bootloader | POSIX sh |
+| **kiwi-install** | Disk installer: partitions (msdos/GPT), LUKS2 root encryption, ephemeral encrypted swap, timezone + locale selection, sched_ext scheduler setup, offline extlinux (BIOS) or grub-on-ESP (UEFI) bootloader | POSIX sh |
 | **kinini-settings** | CachyOS-inspired tuning shipped in the skel: sysctl.d profile, per-device IO-scheduler udev rules, zram swap, watchdog blacklists | conf/sh |
+| **kinini kernel** | Vanilla Linux LTS built in CI over `allnoconfig` + a curated fragment: **sched_ext enabled**, BTF, all boot-critical drivers built in (no initramfs modules), zram/bfq/BBR onboard | config + CI |
 
 ## Quick start
 
@@ -86,16 +87,17 @@ types):
 # rootfs with a kernel and fastfetch (linux metapackage is skipped,
 # the LTS kernel series is pinned explicitly):
 IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
-        https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch
+        https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch \
+        syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx
 
-./tools/mkiso.sh /tmp/rootfs kinini-0.3-x86_64.iso
+./tools/mkiso.sh /tmp/rootfs kinini-0.4-x86_64.iso
 ```
 
 Test it in qemu (BIOS or OVMF/UEFI — the same image):
 
 ```sh
-qemu-system-x86_64 -m 1024 -cdrom kinini-0.3-x86_64.iso -boot d
-qemu-system-x86_64 -m 1024 -cdrom kinini-0.3-x86_64.iso -bios OVMF.fd
+qemu-system-x86_64 -m 1024 -cdrom kinini-0.4-x86_64.iso -boot d
+qemu-system-x86_64 -m 1024 -cdrom kinini-0.4-x86_64.iso -bios OVMF.fd
 ```
 
 The live session autologs in on tty1 and ttyS0, brings the network up via
@@ -145,14 +147,15 @@ exec agetty --noclear -L tty1 38400 linux
 ```
 
 Nothing is enabled behind the user's back: services live in
-`/etc/niinit/services-available` until you link them in. `sshd` and `dhcpcd`
-ship there as optional services — disabled by default in installed systems
-(the live ISO turns DHCP on for you):
+`/etc/niinit/services-available` until you link them in. `sshd`, `dhcpcd`
+and `scx` ship there as optional services — disabled by default in installed
+systems unless chosen in the installer (the live ISO turns DHCP on for you):
 
 ```sh
 svctl enable sshd       # symlink from services-available, svdir picks it up in <=5s
 svctl start sshd        # waits until it is actually up
 svctl enable dhcpcd     # DHCP on wired interfaces (runs dhcpcd -B -M, foreground)
+svctl enable scx        # sched_ext BPF CPU scheduler (needs: kipki install scx)
 ```
 
 `svctl enable/disable` manage those symlinks for you; the supervisor honors
@@ -205,14 +208,45 @@ all offline, from binaries shipped inside the ISO:
 
 zram swap is configured in addition to the swap partition (see below). The
 root password stays `kinini` until you change it (`passwd`). Without `-y`
-the installer lists disks, asks for confirmation and offers to set the root
-password interactively. After it finishes, remove the medium and reboot
-straight into the installed system.
+the installer lists disks, offers **LUKS2 encryption**, **timezone** and
+**locale** pickers, asks whether to enable a **sched_ext scheduler**, asks
+for confirmation and offers to set the root password interactively. After
+it finishes, remove the medium and reboot straight into the installed
+system.
 
-Both firmware paths are verified in CI on every push: qemu boots the ISO,
+### Full-disk encryption (LUKS2)
+
+Answer `y` to the encryption question (or pass the flags directly):
+
+```sh
+kiwi-install -d /dev/sda -e                          # asks for a passphrase twice
+kiwi-install -d /dev/sda -e -p /root/lukskey         # scripted installs
+kiwi-install -d /dev/sda -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd
+```
+
+The root partition becomes a LUKS2 container (default argon2id KDF) opened
+as `/dev/mapper/kinini`; the passphrase is asked in the initramfs at every
+boot (three attempts, then a rescue shell). The swap partition, when it
+exists, is **not** protected by your passphrase — instead it is re-encrypted
+with a fresh random key on every boot via `/etc/crypttab` (plain dm-crypt,
+`/dev/urandom` key), so no passphrase prompt and nothing sensitive leaks to
+disk across reboots. `rd.luks.uuid=` on the kernel command line ties the
+initramfs to the right container.
+
+### Timezone and locale
+
+`-z Region/City` writes `/etc/localtime` (interactive continent/city picker
+without the flag), `-l xx_XX.UTF-8` writes `/etc/locale.conf`, enables the
+locale in `/etc/default/libc-locales` and regenerates it through
+`xbps-reconfigure -f glibc-locales`. `/etc/profile.d/10-locale.sh` exports
+`LANG` for login shells. Defaults in `-y` mode: `UTC` and `en_US.UTF-8`.
+
+Both firmware paths — plus a full LUKS2 + Europe/Moscow + `ru_RU.UTF-8` +
+`scx_lavd` install — are verified in CI on every push: qemu boots the ISO,
 installs it to a virtio disk, reboots from disk and checks login, DHCP
-lease, zram and the tuning — over the serial console, for BIOS and OVMF
-UEFI alike.
+lease, zram, the tuning, the passphrase unlock, the timezone, the locale,
+the encrypted swap and the attached scheduler — over the serial console,
+for BIOS and OVMF UEFI alike.
 
 ## System tuning (CachyOS-inspired)
 
@@ -239,13 +273,59 @@ Everything is a plain config file under `/etc` or `/usr/lib` — edit
 `/etc/sysctl.d/*.conf` or `/etc/kinini/zram.conf` to override, no tools
 required.
 
+## sched_ext CPU schedulers (CachyOS-style)
+
+CachyOS's defining feature is the kernel, and KiniNi follows suit: every
+installed system boots the **KiniNi kernel** — a pure vanilla LTS (6.12.x,
+no patches) built in CI from `kernel/kinini-x86_64.config` over `allnoconfig`
+with `CONFIG_SCHED_CLASS_EXT=y` and BTF on. Void's own kernels ship with
+sched_ext disabled, so the distro builds its own — everything the installed
+system needs (ext4, virtio, AHCI/NVMe, dm-crypt, zram, BFQ/deadline/kyber,
+BBR+fq, e1000/virtio-net, USB) is built in, so the boot initramfs carries
+**no kernel modules at all** (only cryptsetup for LUKS unlocking).
+
+The Void `scx` package (the same upstream
+[sched-ext/scx](https://github.com/sched-ext/scx) tree CachyOS ships)
+provides the BPF schedulers themselves. KiniNi integrates them the runit
+way, without D-Bus: the `scx` service runs the configured scheduler in the
+foreground under the niinit supervisor, so a crashed scheduler is restarted
+automatically and stopping the service falls back to the kernel cleanly.
+
+```sh
+kipki install scx                # scx_lavd, scx_bpfland, scx_flash, ...
+svctl enable scx                 # enable at boot (services-available/scx)
+svctl start scx                  # attach now
+vi /etc/kinini/scx.conf          # SCX_SCHEDULER=scx_lavd, SCX_FLAGS=
+svctl restart scx
+dmesg | grep sched_ext           # "BPF scheduler \"scx_lavd\" enabled"
+scxtop                           # live scheduler/CPU telemetry
+zcat /proc/config.gz | grep SCHED_CLASS_EXT   # the kernel tells its config
+```
+
+Scheduler cheat-sheet (same picks as the CachyOS wiki):
+
+| Scheduler | Sweet spot |
+|-----------|-----------|
+| `scx_lavd` | latency-criticality aware dynamic priority — CachyOS default, desktops and gaming |
+| `scx_bpfland` | interactive-first vruntime scheduler, general desktop |
+| `scx_flash` | lightweight EDF, very low overhead — servers and VMs |
+| `scx_p2dq` | pick-two dispatch queues, simple and modern |
+| `scx_rusty` | load-balancing hierarchical buckets |
+| `scx_layered` | policy-driven hierarchical layers for advanced setups |
+
+The installer offers to enable a scheduler (`-S scx_lavd` to script it,
+`-S none` to skip; `scx_lavd` is the default in `-y` mode) and mounts
+`bpffs` + loads `sched_ext` at boot in stage 1 regardless, so enabling the
+service later takes exactly one `svctl` command.
+
 ## Booting
 
 For a manual install, point any Linux kernel and bootloader (GRUB, syslinux,
 EFISTUB) at the rootfs — `/sbin/init` is a symlink to `niinit`, so pass
 `root=UUID=... rw` and optionally `init=/sbin/niinit` if you prefer to be
 explicit. Or skip the manual assembly entirely and use `kiwi-install` from
-the live ISO above.
+the live ISO above. The installed system boots the **KiniNi kernel** (see
+sched_ext above); the live session keeps running the stock Void kernel.
 
 ## CI
 
@@ -254,11 +334,15 @@ and runs the supervisor test suite (up/down/restart/once, `down` files,
 `finish` scripts, crash restart, start/stop/check, enable/disable, signals,
 supervisor exit, plus the `svdir` spawn/stop cycle), the second builds a full
 rootfs from live Void repositories and verifies the resulting tree byte by
-byte, and the third builds the complete live ISO (including a static busybox
-compiled from source), then **boots it in qemu — BIOS and OVMF UEFI —
-installs to a virtual disk and reboots from the installed system**, checking
-login, DHCP, zram and the tuning over the serial console before uploading
-the ISO as a workflow artifact.
+byte, and the third builds the complete live ISO — static busybox from
+source, the KiniNi kernel (vanilla LTS compiled with sched_ext + BTF) and a
+cryptsetup-enabled disk initramfs — then **boots it in qemu — BIOS and OVMF
+UEFI — installs to a virtual disk (twice: a plain install and a LUKS2 +
+Europe/Moscow + ru_RU.UTF-8 + scx_lavd install), reboots from the installed
+systems and checks everything** — login, DHCP, zram, the tuning, the
+passphrase unlock, the timezone, the locale, the encrypted swap and the
+attached sched_ext scheduler — over the serial console before uploading the
+ISO as a workflow artifact.
 
 ## Mascot
 
@@ -298,12 +382,26 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
   корень на overlayfs; sshd и dhcpcd лежат в `services-available`, на live
   DHCP включён сразу;
 - `tools/kiwi-install` — установщик на диск: разметка (msdos/GPT),
-  swap-раздел, копирование live-системы, fstab и загрузчик без сети —
-  extlinux (BIOS) или grub на ESP (UEFI, `\EFI\BOOT\BOOTX64.EFI`);
+  **LUKS2-шифрование корня** (пароль запрашивается в initramfs при каждой
+  загрузке) с эфемерно шифруемым swap-разделом через `/etc/crypttab`,
+  **выбор часового пояса и локали**, настройка scx-планировщика, копирование
+  live-системы, fstab и загрузчик без сети — extlinux (BIOS) или grub на ESP
+  (UEFI, `\EFI\BOOT\BOOTX64.EFI`);
 - **tuning** — системные настройки в духе CachyOS: sysctl-профиль
   (swappiness, vfs_cache_pressure, BBR+fq и т.д.), zram-подкачка
   (`zram-swap`, zstd, приоритет 100), udev-правила выбора IO-планировщика
   (bfq/mq-deadline/kyber), блэклисты watchdog'ов, THP `defer+madvise`;
+- **sched_ext** — BPF-планировщики CPU как в CachyOS: пакет `scx`
+  (scx_lavd, scx_bpfland, scx_flash, scx_p2dq, scx_rusty, scx_layered,...),
+  сервис `scx` гоняет выбранный планировщик под супервизией niinit
+  (без D-Bus, конфиг `/etc/kinini/scx.conf`), stage-1 монтирует bpffs
+  и грузит модуль sched_ext;
+- **kinini-kernel** — своё ядро как у CachyOS: чистый vanilla LTS 6.12.x
+  без патчей, собирается в CI из `kernel/kinini-x86_64.config` поверх
+  allnoconfig — `CONFIG_SCHED_CLASS_EXT=y` + BTF, все нужные драйверы
+  встроены в ядро (ext4, virtio, AHCI/NVMe, dm-crypt, zram, bfq/kyber,
+  BBR+fq, USB) — initramfs дисковой загрузки не несёт модулей ядра вовсе;
+  live-сессия при этом продолжает грузить стандартное ядро Void;
 - маскот — птичка киви, ASCII-арт устанавливается в
   `/usr/share/kinini/kiwi.txt` и показывается `fastfetch`.
 
@@ -313,7 +411,7 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 `voidlinux/voidlinux`, от root).
 
 **Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
-https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools`,
+https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx`,
 затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`.
 
 **Установка на диск:** загрузите ISO (BIOS или UEFI — установщик
@@ -322,13 +420,29 @@ https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch sysli
 ```sh
 kiwi-install -d /dev/nvme0n1 -y    # UEFI: GPT + ESP + grub
 kiwi-install -d /dev/sda -y        # BIOS: msdos + extlinux
+kiwi-install -d /dev/sda -e        # с LUKS2: пароль спросит дважды
+kiwi-install -d /dev/sda -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd
 ```
 
-— разметка, swap-раздел (по умолчанию min(2×RAM, 4 ГиБ)), копирование
-системы, fstab, DHCP-сервис и загрузчик без сети; оба пути проверяются
-в CI на каждый пуш: QEMU грузит ISO, ставит систему на виртуальный диск
-и перезагружается с неё (BIOS и OVMF/UEFI), проверяя вход, DHCP, zram
-и настройку swappiness по serial-консоли.
+— разметка, swap-раздел (по умолчанию min(2×RAM, 4 ГиБ), при LUKS —
+эфемерно шифруемый свежим ключом при каждой загрузке), копирование
+системы, fstab, DHCP-сервис, часовой пояс и локаль (`/etc/locale.conf` +
+генерация через glibc-locales), загрузчик — всё без сети. Без `-y`
+установщик показывает диски, предлагает шифрование, часовой пояс,
+локаль и sched_ext-планировщик интерактивными меню. Оба пути (BIOS и
+OVMF/UEFI), а также полный сценарий LUKS2 + Europe/Moscow + ru_RU.UTF-8 +
+scx_lavd проверяются в CI на каждый пуш: QEMU грузит ISO, ставит систему
+на виртуальный диск и перезагружается с неё, проверяя вход, DHCP, zram,
+настройки, разблокировку LUKS, часовой пояс, локаль, шифрованный swap
+и подключённый планировщик по serial-консоли.
+
+**sched_ext (CachyOS-style):** `kipki install scx`, затем
+`svctl enable scx && svctl start scx`; планировщик выбирается в
+`/etc/kinini/scx.conf` (по умолчанию scx_lavd — дефолт CachyOS), сервис
+держит его под супервизией: упал — перезапущен, остановили — ядро
+возвращается к EEVDF. Список планировщиков и их профили — как в вики
+CachyOS: scx_lavd (десктоп/игры), scx_bpfland (интерактивность),
+scx_flash (серверы/ВМ), scx_p2dq, scx_rusty, scx_layered.
 
 **Загрузка:** `/sbin/init` — симлинк на `niinit`, так что достаточно любого
 ядра и загрузчика; либо просто установите систему через `kiwi-install`.

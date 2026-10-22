@@ -1,7 +1,8 @@
 #!/bin/sh
 # kiwi-install - install KiniNi from the live system to a disk
 #
-# usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-N] [-y] [-h]
+# usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-e] [-p FILE]
+#                     [-z ZONE] [-l LOCALE] [-S SCHED] [-N] [-y] [-h]
 #
 #   -d DISK    target disk, e.g. /dev/sda (interactive picker if omitted)
 #   -b MODE    partition layout and bootloader:
@@ -13,22 +14,40 @@
 #              default: autodetect (uefi when booted with efivars)
 #   -s SWAPMB  swap partition size in MiB (default: min(2*RAM, 4096);
 #              0 disables the swap partition). zram swap is configured
-#              regardless (see /etc/kinini/zram.conf).
+#              regardless (see /etc/kinini/zram.conf)
+#   -e         encrypt the root filesystem with LUKS2 (passphrase asked
+#              twice interactively, or use -p). unlocked in the initramfs
+#              at boot. the swap partition (if any) is encrypted with an
+#              ephemeral random key via /etc/crypttab
+#   -p FILE    file with the LUKS passphrase (implies -e; useful for
+#              scripted installs)
+#   -z ZONE    timezone, e.g. Europe/Moscow (interactive picker if
+#              omitted; written to /etc/localtime)
+#   -l LOCALE  system locale, e.g. ru_RU.UTF-8 (interactive picker if
+#              omitted; /etc/locale.conf + generated with glibc-locales)
+#   -S SCHED   enable the sched_ext CPU scheduler service (CachyOS-style
+#              BPF schedulers from the 'scx' package: scx_lavd,
+#              scx_bpfland, scx_flash, ...); "none" disables. interactive
+#              picker if omitted; default in -y mode: scx_lavd
 #   -N         do not enable the DHCP client (dhcpcd) service
 #   -y         no questions: autodetected bootloader mode, default root
-#              password ("kinini"), DHCP on, swap as given
+#              password ("kinini"), DHCP on, swap as given, UTC timezone,
+#              en_US.UTF-8 locale, no LUKS (needs -p when combined with
+#              -e), scx_lavd scheduler when available
 #
 # the installer copies the running live system to a fresh ext4 partition,
-# un-applies live-only tweaks, writes /etc/fstab and installs an offline
-# bootloader shipped inside the ISO. everything runs from the live image,
-# no network is needed.
+# un-applies live-only tweaks, writes /etc/fstab (and /etc/crypttab for
+# LUKS installs) and installs an offline bootloader shipped inside the
+# ISO. everything runs from the live image, no network is needed.
 # requires: sfdisk, mkfs.ext4, blkid, tar, dd; bios: extlinux + syslinux
-# mbr/ldlinux; uefi: mkfs.vfat + /usr/lib/kinini/BOOTX64.EFI.
+# mbr/ldlinux; uefi: mkfs.vfat + /usr/lib/kinini/BOOTX64.EFI; luks:
+# cryptsetup (in the live image and inside initramfs-disk.img).
 set -eu
 
 TARGET=/mnt/kinini
 DEFROOTPW=kinini
 ESP_MIB=512
+LUKSNAME=kinini
 
 die() {
         echo "kiwi-install: $*" >&2
@@ -56,7 +75,8 @@ ask() {
 }
 
 usage() {
-        echo "usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-N] [-y] [-h]" >&2
+        echo "usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-e] [-p FILE]" >&2
+        echo "                    [-z ZONE] [-l LOCALE] [-S SCHED] [-N] [-y] [-h]" >&2
         exit 1
 }
 
@@ -65,11 +85,22 @@ YES=0
 NODHCP=0
 MODE=
 SWAP=
-while getopts d:b:s:Nyh c; do
+LUKS=0
+PASSFILE=
+TMPKEY=0
+ZONE=
+LOCALE=
+SCHED=
+while getopts d:b:s:z:l:S:p:eNyh c; do
         case $c in
         d)      DISK=$OPTARG ;;
         b)      MODE=$OPTARG ;;
         s)      SWAP=$OPTARG ;;
+        z)      ZONE=$OPTARG ;;
+        l)      LOCALE=$OPTARG ;;
+        S)      SCHED=$OPTARG ;;
+        p)      PASSFILE=$OPTARG LUKS=1 ;;
+        e)      LUKS=1 ;;
         N)      NODHCP=1 ;;
         y)      YES=1 ;;
         *)      usage ;;
@@ -95,6 +126,31 @@ for t in sfdisk mkfs.ext4 blkid tar dd; do
 done
 [ -f /usr/lib/kinini/initramfs-disk.img ] \
         || die "/usr/lib/kinini/initramfs-disk.img not found (live iso only)"
+if [ "$LUKS" = 1 ]; then
+        have cryptsetup || die "cryptsetup not found (add 'cryptsetup' to the live image)"
+        if [ -n "$PASSFILE" ]; then
+                [ -f "$PASSFILE" ] || die "passphrase file not found: $PASSFILE"
+        elif [ "$YES" = 1 ]; then
+                die "-e with -y requires -p FILE (no console to ask for a passphrase)"
+        fi
+fi
+if [ -n "$LOCALE" ]; then
+        case "$LOCALE" in
+        *.UTF-8|*.utf8) LOCALE=${LOCALE%.utf8}.UTF-8 ;;
+        *)              die "locale must be a UTF-8 name, e.g. en_US.UTF-8" ;;
+        esac
+fi
+if [ -n "$ZONE" ] && [ ! -f "/usr/share/zoneinfo/$ZONE" ]; then
+        die "unknown timezone: $ZONE (see /usr/share/zoneinfo)"
+fi
+if [ "$SCHED" = none ]; then
+        :
+elif [ -n "$SCHED" ]; then
+        case "$SCHED" in
+        scx*)   [ -x "/usr/bin/$SCHED" ] || die "$SCHED not found (add 'scx' to the live image)" ;;
+        *)      die "scheduler must be one of the scx_* binaries or 'none'" ;;
+        esac
+fi
 
 if [ "$MODE" = uefi ]; then
         MKFSVFAT=$(command -v mkfs.vfat || command -v mkfs.fat || true)
@@ -122,6 +178,120 @@ fi
 case "$SWAP" in
 ''|*[!0-9]*) die "swap size must be a non-negative integer (MiB)" ;;
 esac
+
+# ------------------------------------------------------------- pickers
+pick_timezone() {
+        ZD=/usr/share/zoneinfo
+        REGIONS="Americas Asia Europe Africa Atlantic Australia Pacific"
+        REG=Europe
+        while :; do
+                n=1
+                echo "  timezone regions:"
+                # shellcheck disable=SC2086
+                for r in $REGIONS; do
+                        printf '    %2d) %s\n' "$n" "$r"
+                        n=$(( n + 1 ))
+                done
+                printf '  region [Europe]: '
+                read -r ans
+                REG=${ans:-Europe}
+                [ -d "$ZD/$REG" ] && break
+                echo "  no such region: $REG"
+        done
+        while :; do
+                n=1
+                echo "  timezones in $REG:"
+                find "$ZD/$REG" -type f 2>/dev/null | sed "s|^$ZD/||" | sort | {
+                        while read -r z; do
+                                printf '    %2d) %s\n' "$n" "$z"
+                                n=$(( n + 1 ))
+                        done
+                }
+                printf '  timezone [1]: '
+                read -r ans
+                ans=${ans:-1}
+                case "$ans" in
+                *[!0-9]*)       ZONE=$ans ;;
+                *)              ZONE=$(find "$ZD/$REG" -type f 2>/dev/null \
+                                        | sed "s|^$ZD/||" | sort \
+                                        | sed -n "${ans}p") ;;
+                esac
+                [ -n "$ZONE" ] && [ -f "$ZD/$ZONE" ] && return
+                echo "  invalid choice: $ans"
+        done
+}
+
+pick_locale() {
+        # shellcheck disable=SC2086
+        LOCS="en_US.UTF-8 ru_RU.UTF-8 de_DE.UTF-8 fr_FR.UTF-8 \
+es_ES.UTF-8 it_IT.UTF-8 pl_PL.UTF-8 uk_UA.UTF-8"
+        while :; do
+                n=1
+                echo "  locales (or type a full name, e.g. pt_BR.UTF-8):"
+                # shellcheck disable=SC2086
+                for l in $LOCS; do
+                        printf '    %2d) %s\n' "$n" "$l"
+                        n=$(( n + 1 ))
+                done
+                printf '  locale [1]: '
+                read -r ans
+                ans=${ans:-1}
+                case "$ans" in
+                *[!0-9]*)       LOCALE=$ans ;;
+                *)              LOCALE=$(echo "$LOCS" | tr -s ' \n' '\n' \
+                                        | sed -n "${ans}p") ;;
+                esac
+                case "$LOCALE" in
+                *.UTF-8|*.utf8) LOCALE=${LOCALE%.utf8}.UTF-8; return ;;
+                *)              echo "  invalid locale: $LOCALE" ;;
+                esac
+        done
+}
+
+pick_sched() {
+        # list scx schedulers present in the live image (skip tools)
+        SCXS=$(ls /usr/bin/scx_* 2>/dev/null | sed 's|.*/||' \
+                | grep -v -e '^scx_loader$' -e '^scxctl$' -e '^scx-' \
+                | sort -u)
+        [ -n "$SCXS" ] || { SCHED=none; return; }
+        n=1
+        echo "  sched_ext schedulers (CachyOS-style BPF CPU schedulers):"
+        # shellcheck disable=SC2086
+        for s in $SCXS; do
+                printf '    %2d) %s\n' "$n" "$s"
+                n=$(( n + 1 ))
+        done
+        echo "  scx_lavd is the CachyOS default (desktop and gaming)"
+        printf '  scheduler [scx_lavd]: '
+        read -r ans
+        ans=${ans:-scx_lavd}
+        case "$ans" in
+        *[!0-9]*)       SCHED=$ans ;;
+        *)              SCHED=$(echo "$SCXS" | sed -n "${ans}p") ;;
+        esac
+        [ "$SCHED" = none ] && return
+        [ -x "/usr/bin/$SCHED" ] || SCHED=$(echo "$SCXS" | sed -n 1p)
+}
+
+read_luks_passphrase() {
+        printf '  LUKS passphrase (hidden): '
+        stty -echo 2>/dev/null || true
+        read -r P1
+        stty echo 2>/dev/null || true
+        echo
+        printf '  repeat passphrase: '
+        stty -echo 2>/dev/null || true
+        read -r P2
+        stty echo 2>/dev/null || true
+        echo
+        [ -n "$P1" ] || die "empty passphrase"
+        [ "$P1" = "$P2" ] || die "passphrases do not match"
+        PASSFILE=$(mktemp /tmp/kiwi-luks.XXXXXX)
+        chmod 600 "$PASSFILE"
+        printf '%s' "$P1" > "$PASSFILE"
+        TMPKEY=1
+        P1=x P2=x
+}
 
 # ---------------------------------------------------------------- disk pick
 if [ -z "$DISK" ]; then
@@ -160,15 +330,57 @@ if [ "$MODE" = uefi ]; then
 else
         layout="msdos: extlinux (BIOS)"
 fi
+
+# ------------------------------------------------------------- options
+if [ "$YES" = 1 ]; then
+        # non-interactive defaults
+        if [ "$LUKS" = 1 ] && [ -z "$PASSFILE" ]; then
+                die "-e with -y requires -p FILE (no console to ask for a passphrase)"
+        fi
+        [ -n "$ZONE" ] || ZONE=UTC
+        [ -n "$LOCALE" ] || LOCALE=en_US.UTF-8
+        if [ -z "$SCHED" ]; then
+                if [ -x /usr/bin/scx_lavd ]; then
+                        SCHED=scx_lavd
+                else
+                        SCHED=none
+                fi
+        fi
+else
+        if [ "$LUKS" = 0 ]; then
+                if ask "encrypt root with LUKS2 (passphrase asked at boot)?" n; then
+                        LUKS=1
+                fi
+        fi
+        [ "$LUKS" = 0 ] || [ -n "$PASSFILE" ] || read_luks_passphrase
+        [ -n "$ZONE" ] || pick_timezone
+        [ -n "$LOCALE" ] || pick_locale
+        if [ -z "$SCHED" ]; then
+                if ask "enable a sched_ext CPU scheduler (CachyOS-style)?" y; then
+                        pick_sched
+                else
+                        SCHED=none
+                fi
+        fi
+fi
+
 if [ "$YES" = 0 ]; then
         echo
         echo "  WARNING: everything on $DISK (${sz} MB) will be destroyed."
-        echo "  Layout: $layout, ext4 root"
+        echo "  Layout:  $layout, ext4 root"
+        [ "$LUKS" = 0 ] || echo "  LUKS:    LUKS2 root (passphrase at boot)"
         if [ "$SWAP" -gt 0 ]; then
-                echo "  Swap:   ${SWAP} MiB partition (+ zram by default)"
+                if [ "$LUKS" = 1 ]; then
+                        echo "  Swap:    ${SWAP} MiB, ephemeral random-key encryption" \
+                                "(+ zram by default)"
+                else
+                        echo "  Swap:    ${SWAP} MiB partition (+ zram by default)"
+                fi
         else
-                echo "  Swap:   none (zram only)"
+                echo "  Swap:    none (zram only)"
         fi
+        echo "  Timezone: ${ZONE:-UTC}   Locale: ${LOCALE:-en_US.UTF-8}"
+        echo "  SCX scheduler: ${SCHED:-none}"
         echo
         ask "proceed?" n || die "aborted"
 fi
@@ -223,22 +435,44 @@ if [ "$MODE" = uefi ]; then
         [ -b "$ESPPART" ] || die "partition $ESPPART did not appear"
         "$MKFSVFAT" -F 32 -n KININI-ESP "$ESPPART" >/dev/null
 fi
+
+ROOTFSDEV=$ROOTPART
+if [ "$LUKS" = 1 ]; then
+        msg "encrypting root: LUKS2 on $ROOTPART (mapper $LUKSNAME)"
+        cryptsetup luksFormat --type luks2 --batch-mode \
+                --key-file "$PASSFILE" "$ROOTPART"
+        cryptsetup open --type luks --key-file "$PASSFILE" \
+                "$ROOTPART" "$LUKSNAME"
+        [ -b "/dev/mapper/$LUKSNAME" ] || die "/dev/mapper/$LUKSNAME did not appear"
+        if [ "$TMPKEY" = 1 ]; then
+                rm -f "$PASSFILE"
+                PASSFILE=
+                TMPKEY=0
+        fi
+        ROOTFSDEV="/dev/mapper/$LUKSNAME"
+fi
 # syslinux 6.03 cannot read fs with 64bit/metadata_csum/orphan_file,
 # keep the feature set conservative for the bootloader
 mkfs.ext4 -q -F -O ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file \
-        -L kinini "$ROOTPART"
+        -L kinini "$ROOTFSDEV"
 
 if [ -n "$SWAPPART" ]; then
         [ -b "$SWAPPART" ] || die "partition $SWAPPART did not appear"
-        mkswap -L kinini-swap "$SWAPPART" >/dev/null
-        swapon "$SWAPPART" 2>/dev/null || true
-        msg "swap on $SWAPPART (${SWAP} MiB)"
+        if [ "$LUKS" = 1 ]; then
+                # formatted with a fresh random key on every boot
+                # (see the crypttab "swap" entry below)
+                msg "swap will be encrypted with an ephemeral key (crypttab)"
+        else
+                mkswap -L kinini-swap "$SWAPPART" >/dev/null
+                swapon "$SWAPPART" 2>/dev/null || true
+                msg "swap on $SWAPPART (${SWAP} MiB)"
+        fi
 fi
 
 # ---------------------------------------------------------------- copy root
 mkdir -p "$TARGET"
 mountpoint -q "$TARGET" && die "$TARGET already mounted"
-mount -t ext4 "$ROOTPART" "$TARGET"
+mount -t ext4 "$ROOTFSDEV" "$TARGET"
 if [ "$MODE" = uefi ]; then
         mkdir -p "$TARGET/boot/efi"
         mount -t vfat "$ESPPART" "$TARGET/boot/efi"
@@ -273,11 +507,52 @@ if [ "$NODHCP" = 0 ] \
                 "$TARGET/etc/niinit/services/dhcpcd"
 fi
 
+if [ "${SCHED:-none}" != none ] \
+        && [ -d "$TARGET/etc/niinit/services-available/scx" ]; then
+        if [ -x "$TARGET/usr/bin/$SCHED" ]; then
+                msg "enabling sched_ext scheduler service ($SCHED)"
+                printf '# written by kiwi-install\nSCX_SCHEDULER=%s\nSCX_FLAGS=\n' \
+                        "$SCHED" > "$TARGET/etc/kinini/scx.conf"
+                ln -sfn /etc/niinit/services-available/scx \
+                        "$TARGET/etc/niinit/services/scx"
+        else
+                msg "warning: $SCHED not found in the target, scx service skipped"
+        fi
+fi
+
+# ---------------------------------------------------------------- timezone
+if [ -n "$ZONE" ] && [ -f "/usr/share/zoneinfo/$ZONE" ]; then
+        msg "setting timezone: $ZONE"
+        ln -sfn "/usr/share/zoneinfo/$ZONE" "$TARGET/etc/localtime"
+fi
+
+# ---------------------------------------------------------------- locale
+if [ -n "$LOCALE" ]; then
+        msg "setting locale: $LOCALE"
+        printf 'LANG=%s\n' "$LOCALE" > "$TARGET/etc/locale.conf"
+        if [ -f "$TARGET/etc/default/libc-locales" ]; then
+                # uncomment the matching line so glibc-locales generates it
+                sed -i "s|^#${LOCALE} |${LOCALE} |" \
+                        "$TARGET/etc/default/libc-locales"
+                msg "generating locale data (glibc-locales)"
+                mount -t proc proc "$TARGET/proc" 2>/dev/null || true
+                chroot "$TARGET" /usr/bin/xbps-reconfigure -f glibc-locales \
+                        >/dev/null 2>&1 \
+                        || msg "warning: locale generation failed" \
+                               "(${LOCALE} stays ungenerated)"
+                umount "$TARGET/proc" 2>/dev/null || true
+        fi
+fi
+
 # ---------------------------------------------------------------- fstab
-UUID_ROOT=$(blkid -s UUID -o value "$ROOTPART")
-[ -n "$UUID_ROOT" ] || die "cannot read uuid of $ROOTPART"
+UUID_ROOT=$(blkid -s UUID -o value "$ROOTFSDEV")
+[ -n "$UUID_ROOT" ] || die "cannot read uuid of $ROOTFSDEV"
 {
-        echo "UUID=$UUID_ROOT  /       ext4    defaults        0 1"
+        if [ "$LUKS" = 1 ]; then
+                echo "/dev/mapper/$LUKSNAME  /       ext4    defaults        0 1"
+        else
+                echo "UUID=$UUID_ROOT  /       ext4    defaults        0 1"
+        fi
         echo "tmpfs       /tmp    tmpfs   defaults,nosuid 0 0"
         if [ "$MODE" = uefi ]; then
                 UUID_ESP=$(blkid -s UUID -o value "$ESPPART")
@@ -285,10 +560,36 @@ UUID_ROOT=$(blkid -s UUID -o value "$ROOTPART")
                         && echo "UUID=$UUID_ESP  /boot/efi  vfat  defaults  0 2"
         fi
         if [ -n "$SWAPPART" ]; then
-                UUID_SWAP=$(blkid -s UUID -o value "$SWAPPART")
-                [ -n "$UUID_SWAP" ] && echo "UUID=$UUID_SWAP  none    swap    sw              0 0"
+                if [ "$LUKS" = 1 ]; then
+                        echo "/dev/mapper/swap    none    swap    sw              0 0"
+                else
+                        UUID_SWAP=$(blkid -s UUID -o value "$SWAPPART")
+                        [ -n "$UUID_SWAP" ] \
+                                && echo "UUID=$UUID_SWAP  none    swap    sw              0 0"
+                fi
         fi
 } > "$TARGET/etc/fstab"
+
+# ---------------------------------------------------------------- crypttab
+if [ "$LUKS" = 1 ]; then
+        LUKSUUID=$(blkid -s UUID -o value "$ROOTPART")
+        [ -n "$LUKSUUID" ] || die "cannot read LUKS uuid of $ROOTPART"
+        msg "writing /etc/crypttab"
+        {
+                echo "# unlocked by the initramfs (rd.luks.uuid= on the"
+                echo "# kernel command line), passphrase asked at boot"
+                echo "$LUKSNAME UUID=$LUKSUUID none luks,discard"
+                if [ -n "$SWAPPART" ]; then
+                        SWAPPTUUID=$(blkid -s PARTUUID -o value "$SWAPPART")
+                        if [ -n "$SWAPPTUUID" ]; then
+                                echo "# ephemeral encrypted swap: a fresh random"
+                                echo "# key is drawn on every boot, no prompt"
+                                echo "swap /dev/disk/by-partuuid/$SWAPPTUUID" \
+                                        "/dev/urandom swap"
+                        fi
+                fi
+        } > "$TARGET/etc/crypttab"
+fi
 
 # ---------------------------------------------------------------- password
 if [ "$YES" = 0 ] && ask "set root password now?" y; then
@@ -298,11 +599,30 @@ else
 fi
 
 # ---------------------------------------------------------------- bootloader
+# the disk kernel is the KiniNi kernel when its version file is present,
+# otherwise the running live kernel (older isos)
 KVER=$(uname -r)
-msg "installing kernel $KVER and initramfs into the target"
+if [ -f /usr/lib/kinini/kver ]; then
+        KVER=$(cat /usr/lib/kinini/kver)
+        msg "installing KiniNi kernel $KVER (sched_ext) and initramfs into the target"
+        # the live kernel's module tree is useless for the KiniNi kernel
+        # (everything is built in) and costs ~300 MB on the target disk
+        if [ "$KVER" != "$(uname -r)" ] && [ -d "$TARGET/usr/lib/modules/$(uname -r)" ]; then
+                msg "pruning live-kernel modules ($(uname -r)) from the target"
+                rm -rf "$TARGET/usr/lib/modules/$(uname -r)"
+        fi
+else
+        msg "installing kernel $KVER and initramfs into the target"
+fi
 cp /usr/lib/kinini/vmlinuz "$TARGET/boot/vmlinuz-$KVER"
 chmod 644 "$TARGET/boot/vmlinuz-$KVER"
 cp /usr/lib/kinini/initramfs-disk.img "$TARGET/boot/initramfs.img"
+
+if [ "$LUKS" = 1 ]; then
+        KCMD="root=/dev/mapper/$LUKSNAME rd.luks.uuid=$LUKSUUID rw console=tty0 console=ttyS0,115200n8 loglevel=4"
+else
+        KCMD="root=UUID=$UUID_ROOT rw console=tty0 console=ttyS0,115200n8 loglevel=4"
+fi
 
 if [ "$MODE" = uefi ]; then
         msg "writing grub configuration"
@@ -312,7 +632,7 @@ set timeout=3
 set default=0
 
 menuentry "KiniNi Linux" {
-    linux /boot/vmlinuz-$KVER root=UUID=$UUID_ROOT rw console=tty0 console=ttyS0,115200n8 loglevel=4
+    linux /boot/vmlinuz-$KVER $KCMD
     initrd /boot/initramfs.img
 }
 EOF
@@ -337,7 +657,7 @@ TIMEOUT 30
 LABEL kinini
         KERNEL /boot/vmlinuz-$(uname -r)
         INITRD /boot/initramfs.img
-        APPEND root=UUID=$UUID_ROOT rw console=tty0 console=ttyS0,115200n8 loglevel=4
+        APPEND $KCMD
 EOF
 
         /usr/bin/extlinux --install "$TARGET/boot/extlinux"
@@ -353,12 +673,20 @@ if [ "$MODE" = uefi ]; then
         umount "$TARGET/boot/efi"
 fi
 umount "$TARGET"
+[ "$LUKS" = 1 ] && cryptsetup close "$LUKSNAME" 2>/dev/null || true
 sync
 
 echo
-if [ "$MODE" = uefi ]; then
-        msg "done: KiniNi installed on $ROOTPART (UUID $UUID_ROOT), ESP $ESPPART"
+if [ "$LUKS" = 1 ]; then
+        msg "done: KiniNi installed on $ROOTPART (LUKS2 UUID $LUKSUUID), root /dev/mapper/$LUKSNAME"
 else
         msg "done: KiniNi installed on $ROOTPART (UUID $UUID_ROOT)"
 fi
+if [ "$MODE" = uefi ]; then
+        msg "ESP: $ESPPART"
+fi
+msg "timezone: ${ZONE:-UTC}, locale: ${LOCALE:-en_US.UTF-8}, scx: ${SCHED:-none}"
 msg "reboot and remove the live medium to boot from disk"
+if [ "$LUKS" = 1 ]; then
+        msg "the root passphrase will be asked once at every boot"
+fi

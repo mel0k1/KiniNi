@@ -246,12 +246,14 @@ LIVEMODS="nls_cp437 nls_ascii \
         usb-common usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci uhci-hcd usb-storage uas \
         isofs overlay \
         agpgart drm drm_kms_helper ttm drm_ttm_helper drm_vram_helper bochs"
-# disk boot: storage chain + ext4 stack, no cd/drm
+# disk boot: storage chain + ext4 stack + dm-crypt/LUKS2 crypto, no cd/drm
 DISKMODS="scsi_common scsi_mod sd_mod \
         libata libahci ahci ata_piix \
         virtio_ring virtio virtio_blk virtio_pci_legacy_dev virtio_pci_modern_dev virtio_pci \
         usb-common usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci uhci-hcd usb-storage uas \
-        crc16 crc32c_generic crc32c_intel mbcache jbd2 ext4"
+        crc16 crc32c_generic crc32c_intel mbcache jbd2 ext4 \
+        dm_mod dm_bufio gf128mul crypto_simd cryptd aesni_intel aes_x86_64 \
+        xts sha256_generic sha256_ssse3 hmac dm_crypt"
 
 copy_modules() {
         _dst=$1
@@ -350,6 +352,7 @@ echo "mkiso: disk initramfs modules: $DMOD"
 cat > "$DINITRD/init" <<'EOF'
 #!/bin/busybox sh
 BB=/bin/busybox
+export LD_LIBRARY_PATH=/usr/lib
 $BB mkdir -p /proc /sys /dev /newroot
 $BB mount -t proc proc /proc
 $BB mount -t sysfs sysfs /sys
@@ -359,14 +362,18 @@ for m in scsi_common scsi_mod sd_mod \
         libata libahci ahci ata_piix \
         virtio_ring virtio virtio_blk virtio_pci_legacy_dev virtio_pci_modern_dev virtio_pci \
         usb-common usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci uhci-hcd usb-storage uas \
-        crc16 crc32c_generic crc32c_intel mbcache jbd2 ext4; do
+        crc16 crc32c_generic crc32c_intel mbcache jbd2 ext4 \
+        dm_mod gf128mul crypto_simd cryptd aesni_intel aes_x86_64 \
+        xts sha256_generic sha256_ssse3 hmac dm_bufio dm_crypt; do
         [ -f /modules/$m.ko ] && $BB insmod /modules/$m.ko 2>/dev/null
 done
 
 ROOT=
+LUKSUUID=
 for o in $($BB cat /proc/cmdline); do
         case "$o" in
-        root=*) ROOT=${o#root=} ;;
+        root=*)         ROOT=${o#root=} ;;
+        rd.luks.uuid=*) LUKSUUID=${o#rd.luks.uuid=} ;;
         esac
 done
 
@@ -374,6 +381,63 @@ done
         echo "init: no root= on the command line, dropping to shell"
         exec $BB sh
 }
+
+# LUKS root: find the container by its UUID and unlock it with a
+# passphrase typed on the console (three attempts, then a rescue shell)
+if [ -n "$LUKSUUID" ]; then
+        [ -x /usr/bin/cryptsetup ] || {
+                echo "init: rd.luks.uuid= given but cryptsetup is not in the initramfs"
+                exec $BB sh
+        }
+        LUDEV=
+        n=0
+        while [ $n -lt 40 ]; do
+                # busybox blkid reads the LUKS1 uuid offset, which is garbage
+                # for LUKS2 headers - so also resolve the container by asking
+                # cryptsetup for the uuid of every partition
+                LUDEV=$($BB blkid -U "$LUKSUUID" 2>/dev/null)
+                if [ -z "$LUDEV" ]; then
+                        for d in $($BB sh -c 'echo /dev/vd*[0-9] /dev/sd*[0-9] \
+                                /dev/nvme*n*p*[0-9]' 2>/dev/null); do
+                                [ -b "$d" ] || continue
+                                u=$(/usr/bin/cryptsetup luksUUID "$d" 2>/dev/null) \
+                                        || continue
+                                if [ "$u" = "$LUKSUUID" ]; then
+                                        LUDEV=$d
+                                        break
+                                fi
+                        done
+                fi
+                [ -n "$LUDEV" ] && break
+                $BB sleep 0.5
+                n=$(( n + 1 ))
+        done
+        [ -n "$LUDEV" ] || {
+                echo "init: LUKS device $LUKSUUID not found, dropping to shell"
+                exec $BB sh
+        }
+        echo "init: LUKS container $LUDEV"
+        try=1
+        while [ $try -le 3 ]; do
+                printf 'luks passphrase (%s/3): ' "$try"
+                $BB stty -echo 2>/dev/null
+                read -r PW
+                $BB stty echo 2>/dev/null
+                echo
+                if $BB [ -n "$PW" ] && printf '%s' "$PW" \
+                        | /usr/bin/cryptsetup open "$LUDEV" kinini; then
+                        break
+                fi
+                echo "init: unlock failed (wrong passphrase?)"
+                try=$(( try + 1 ))
+        done
+        $BB [ $try -le 3 ] || exec $BB sh
+        [ -b /dev/mapper/kinini ] || {
+                echo "init: /dev/mapper/kinini did not appear, dropping to shell"
+                exec $BB sh
+        }
+        ROOT=/dev/mapper/kinini
+fi
 
 ROOTDEV=
 if [ "${ROOT#UUID=}" != "$ROOT" ]; then
@@ -424,6 +488,39 @@ echo "init: switch_root failed, dropping to shell"
 exec $BB sh
 EOF
 chmod +x "$DINITRD/init"
+
+# cryptsetup + shared library closure for LUKS unlocking in the disk
+# initramfs. the closure is resolved by running the rootfs' own dynamic
+# loader with LD_LIBRARY_PATH, so this works on any build host.
+CRYPTBIN=$ROOT/usr/bin/cryptsetup
+if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
+        echo "mkiso: adding cryptsetup to the disk initramfs"
+        mkdir -p "$DINITRD/usr/bin" "$DINITRD/usr/lib"
+        cp "$CRYPTBIN" "$DINITRD/usr/bin/cryptsetup"
+        chmod 755 "$DINITRD/usr/bin/cryptsetup"
+        LIBS=$(LD_LIBRARY_PATH="$ROOT/usr/lib" \
+                "$ROOT/usr/lib/ld-linux-x86-64.so.2" --list "$CRYPTBIN" 2>/dev/null \
+                | sed -n 's/.*=> \([^ ]*\).*/\1/p')
+        # shellcheck disable=SC2086
+        for lib in $LIBS "$ROOT/usr/lib/ld-linux-x86-64.so.2"; do
+                case "$lib" in
+                "$ROOT"/*)      ;;
+                *)      die "cryptsetup lib outside the rootfs: $lib" ;;
+                esac
+                cp -L "$lib" "$DINITRD/usr/lib/$(basename "$lib")"
+        done
+        # verify the copied tree resolves cleanly
+        if ! LD_LIBRARY_PATH="$DINITRD/usr/lib" \
+                "$DINITRD/usr/lib/ld-linux-x86-64.so.2" --list \
+                "$DINITRD/usr/bin/cryptsetup" >/dev/null 2>&1; then
+                die "cryptsetup closure incomplete in the disk initramfs"
+        fi
+        CRYPTLIBS=$(find "$DINITRD/usr/lib" -type f | wc -l)
+        echo "mkiso: disk initramfs: cryptsetup + $CRYPTLIBS libs"
+else
+        echo "mkiso: warning: cryptsetup missing from the rootfs," >&2
+        echo "mkiso:          the disk initramfs will not support LUKS" >&2
+fi
 
 echo "mkiso: packing disk initramfs"
 (cd "$DINITRD" && find . | LC_ALL=C sort | $CPIO | $GZIP -9) \
@@ -497,6 +594,19 @@ install -m644 "$LDLINUX" "$ISOT/boot/isolinux/ldlinux.c32"
 # (the kernel is kept for the disk installer: rootfs /boot is pruned)
 mkdir -p "$ISOT/rootfs/usr/lib/kinini" "$ISOT/rootfs/usr/sbin"
 install -m644 "$KIMG" "$ISOT/rootfs/usr/lib/kinini/vmlinuz"
+# the disk installer prefers the KiniNi kernel (vanilla LTS, sched_ext
+# enabled, all drivers built in) when it was staged into the rootfs
+# before the iso build (CI runs tools/mkkernel.sh)
+if [ -f "$ROOT/usr/lib/kinini/vmlinuz-kinini" ] \
+        && [ -f "$ROOT/usr/lib/kinini/kver" ]; then
+        KININI_KVER=$(cat "$ROOT/usr/lib/kinini/kver")
+        [ -n "$KININI_KVER" ] || die "empty /usr/lib/kinini/kver"
+        echo "mkiso: disk kernel: KiniNi $KININI_KVER (sched_ext)"
+        install -m644 "$ROOT/usr/lib/kinini/vmlinuz-kinini" \
+                "$ISOT/rootfs/usr/lib/kinini/vmlinuz"
+else
+        echo "mkiso: no kinini kernel staged, the installer will use the live kernel"
+fi
 install -m644 "$WORK/initramfs-disk.img" \
         "$ISOT/rootfs/usr/lib/kinini/initramfs-disk.img"
 [ "$UEFI" = 1 ] && install -m755 "$WORK/BOOTX64.EFI" \

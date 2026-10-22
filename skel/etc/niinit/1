@@ -14,9 +14,12 @@ mountpoint -q /run     || mount -t tmpfs run /run
         >/dev/null 2>&1 || true
 # scheduler/qdisc/modules for the tuning and mounts below (bfq for HDDs
 # per 66-kinini-iosched.rules, bbr+fq per 70-kinini-settings.conf, vfat
-# for the ESP on UEFI installs)
+# for the ESP on UEFI installs, sched_ext for the scx service)
 [ -x /usr/bin/modprobe ] && modprobe -q bfq tcp_bbr sch_fq zram vfat fat \
-        nls_cp437 2>/dev/null || true
+        nls_cp437 sched_ext 2>/dev/null || true
+# bpffs: sched_ext schedulers (scx service) pin their BPF objects there
+mkdir -p /sys/fs/bpf
+mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
 mount -a 2>/dev/null || true
 # apply system tuning; KiniNi defaults live in /usr/lib/sysctl.d
 # (CachyOS-inspired: 70-kinini-settings.conf)
@@ -29,6 +32,35 @@ done
 [ -w /sys/kernel/mm/transparent_hugepage/defrag ] && \
         echo defer+madvise > /sys/kernel/mm/transparent_hugepage/defrag \
         2>/dev/null || true
+# encrypted swap from /etc/crypttab (4th field "swap"): ephemeral
+# plain dm-crypt with a random key, fresh swap on every boot. the
+# root LUKS volume is unlocked earlier, in the initramfs, and its
+# crypttab entry is skipped here (options do not contain "swap").
+if [ -f /etc/crypttab ] && [ -x /usr/bin/cryptsetup ]; then
+        while read -r dst src key opts; do
+                [ -n "$dst" ] || continue
+                case "$dst" in '#'*) continue ;; esac
+                case " $opts " in
+                *" swap "*)
+                        case "$src" in
+                        PARTUUID=*) src="/dev/disk/by-partuuid/${src#PARTUUID=}" ;;
+                        esac
+                        [ -e "$src" ] || {
+                                echo "niinit: crypttab: $src not found" >&2
+                                continue
+                        }
+                        cryptsetup open --type plain --key-file="$key" \
+                                --cipher aes-xts-plain64 --size 256 \
+                                "$src" "$dst" 2>/dev/null || {
+                                echo "niinit: crypttab: cannot open $src" >&2
+                                continue
+                        }
+                        mkswap "/dev/mapper/$dst" >/dev/null 2>&1 || true
+                        swapon "/dev/mapper/$dst" 2>/dev/null || true
+                        ;;
+                esac
+        done < /etc/crypttab
+fi
 # compressed RAM swap (CachyOS-style), see /etc/kinini/zram.conf;
 # runs after the sysctl pass because it raises vm.swappiness
 [ -x /usr/bin/zram-swap ] && /usr/bin/zram-swap start 2>/dev/null || true

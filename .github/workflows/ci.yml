@@ -30,7 +30,9 @@ jobs:
       - name: build
         run: make -C /src
       - name: lint scripts
-        run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh /src/tools/test-boot.sh
+        run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh \
+          /src/tools/test-boot.sh /src/tools/kiwi-install /src/tools/mkkernel.sh \
+          /src/skel/etc/niinit/1 /src/skel/etc/niinit/services-available/scx/run
       - name: smoke test supervisor
         run: /src/niinit/test-sv.sh
 
@@ -103,6 +105,13 @@ jobs:
           test -f /tmp/rootfs/etc/security/limits.d/20-audio.conf
           test -x /tmp/rootfs/etc/niinit/services-available/dhcpcd/run
           test ! -e /tmp/rootfs/etc/niinit/services/dhcpcd
+          test -x /tmp/rootfs/etc/niinit/services-available/scx/run
+          test ! -e /tmp/rootfs/etc/niinit/services/scx
+          test -f /tmp/rootfs/etc/kinini/scx.conf
+          test -f /tmp/rootfs/etc/profile.d/10-locale.sh
+          grep -q '^SCX_SCHEDULER=scx_lavd' /tmp/rootfs/etc/kinini/scx.conf
+          grep -q 'sys/fs/bpf' /tmp/rootfs/etc/niinit/1
+          grep -q 'crypttab' /tmp/rootfs/etc/niinit/1
 
   iso:
     name: iso build
@@ -118,7 +127,8 @@ jobs:
           xbps-install -y -u
           xbps-install -y gcc make pkg-config libxbps-devel libarchive-devel \
             openssl-devel git cpio gzip xorriso syslinux findutils zstd wget \
-            mtools dosfstools grub grub-x86_64-efi edk2-ovmf qemu-img
+            mtools dosfstools grub grub-x86_64-efi edk2-ovmf qemu-img \
+            flex bison bc dwarves libelf-devel perl
           xbps-install -y qemu-system-amd64 || xbps-install -y qemu-system-x86_64
       - name: build static busybox
         run: |
@@ -143,7 +153,16 @@ jobs:
         run: |
           IGNORE_PKGS=linux /src/tools/mkrootfs.sh /tmp/rootfs \
             https://repo-default.voidlinux.org/current base-system linux6.12 \
-            fastfetch syslinux dhcpcd dosfstools hdparm procps-ng
+            fastfetch syslinux dhcpcd dosfstools hdparm procps-ng \
+            cryptsetup tzdata glibc-locales scx
+      - name: build kinini kernel (sched_ext)
+        timeout-minutes: 120
+        run: |
+          KVER=6.12.114
+          wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
+          /src/tools/mkkernel.sh "linux-$KVER.tar.xz" /tmp/kernel-out
+          install -Dm644 /tmp/kernel-out/vmlinuz-kinini /tmp/rootfs/usr/lib/kinini/vmlinuz-kinini
+          install -Dm644 /tmp/kernel-out/kver /tmp/rootfs/usr/lib/kinini/kver
       - name: build iso
         run: /src/tools/mkiso.sh /tmp/rootfs /tmp/kinini.iso
       - name: verify iso
@@ -162,6 +181,11 @@ jobs:
           /src/tools/test-boot.sh /tmp/kinini.iso uefi boot
           /src/tools/test-boot.sh /tmp/kinini.iso uefi install /tmp/disk-uefi.raw
           /src/tools/test-boot.sh /tmp/kinini.iso uefi verify /tmp/disk-uefi.raw
+      - name: boot test (uefi, LUKS2 + locale + scx)
+        timeout-minutes: 70
+        run: |
+          /src/tools/test-boot.sh /tmp/kinini.iso uefi install /tmp/disk-luks.raw luks
+          /src/tools/test-boot.sh /tmp/kinini.iso uefi verify /tmp/disk-luks.raw luks
       - name: upload iso
         uses: actions/upload-artifact@v4
         with:
