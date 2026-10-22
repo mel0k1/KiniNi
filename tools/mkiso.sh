@@ -549,14 +549,24 @@ echo "mkiso: packing disk initramfs"
 # ---------------------------------------------------------------- uefi image
 # a standalone grub x86_64-efi: the early config locates the filesystem
 # holding /.kinini-live (cd iso9660, usb hybrid or installed ext4) and
-# chains /boot/grub/grub.cfg from it. embedded in the ESP image for
-# el torito (-e) and appended-partition (USB) boots, and shipped inside
-# the live rootfs for the offline UEFI path of kiwi-install.
+# chains /boot/grub/grub.cfg from it; when no marker is readable (LUKS
+# root) it falls back to the ESP it was loaded from, where kiwi-install
+# stages the kernel, initramfs and grub.cfg. embedded in the ESP image
+# for el torito (-e) and appended-partition (USB) boots, and shipped
+# inside the live rootfs for the offline UEFI path of kiwi-install.
 if [ "$UEFI" = 1 ]; then
         echo "mkiso: building grub x86_64-efi standalone image"
         cat > "$WORK/early.cfg" <<'EOF'
-search --file --set=root /.kinini-live
-set prefix=($root)/boot/grub
+if search --file --set=root /.kinini-live; then
+        set prefix=($root)/boot/grub
+else
+        # no marker anywhere grub can read: the root is LUKS-encrypted
+        # and this grub has no cryptodisk. fall back to the ESP we were
+        # loaded from, where kiwi-install put the kernel, the initramfs
+        # and a grub.cfg (single passphrase entry happens in the initramfs)
+        search --file --set=root /EFI/BOOT/BOOTX64.EFI
+        set prefix=($root)/EFI/BOOT
+fi
 normal
 EOF
         if ! "$GRUB_MKIMAGE" -O x86_64-efi -d "$GRUB_EFI_DIR" \

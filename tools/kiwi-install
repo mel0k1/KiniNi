@@ -128,6 +128,7 @@ done
         || die "/usr/lib/kinini/initramfs-disk.img not found (live iso only)"
 if [ "$LUKS" = 1 ]; then
         have cryptsetup || die "cryptsetup not found (add 'cryptsetup' to the live image)"
+        [ "$MODE" = uefi ] || die "LUKS requires UEFI: extlinux cannot read an encrypted /boot"
         if [ -n "$PASSFILE" ]; then
                 [ -f "$PASSFILE" ] || die "passphrase file not found: $PASSFILE"
         elif [ "$YES" = 1 ]; then
@@ -641,8 +642,28 @@ EOF
         # /.kinini-live marker and reads /boot/grub/grub.cfg from it
         : > "$TARGET/.kinini-live"
 
+        # stage the kernel, the initramfs and a grub.cfg on the ESP as
+        # well: with a LUKS root grub (no cryptodisk) cannot read the
+        # marker nor /boot, and BOOTX64.EFI falls back to the ESP it was
+        # loaded from. one passphrase total - typed in the initramfs.
+        msg "staging kernel + initramfs + grub.cfg on the ESP"
+        mkdir -p "$TARGET/boot/efi/EFI/BOOT" "$TARGET/boot/efi/EFI/kinini" \
+                "$TARGET/boot/efi/kinini"
+        cp "$TARGET/boot/vmlinuz-$KVER" \
+                "$TARGET/boot/efi/kinini/vmlinuz-$KVER"
+        cp "$TARGET/boot/initramfs.img" \
+                "$TARGET/boot/efi/kinini/initramfs.img"
+        cat > "$TARGET/boot/efi/EFI/BOOT/grub.cfg" <<EOF
+set timeout=3
+set default=0
+
+menuentry "KiniNi Linux" {
+    linux /kinini/vmlinuz-$KVER $KCMD
+    initrd /kinini/initramfs.img
+}
+EOF
+
         msg "installing grub EFI loader on the ESP"
-        mkdir -p "$TARGET/boot/efi/EFI/BOOT" "$TARGET/boot/efi/EFI/kinini"
         install -m755 /usr/lib/kinini/BOOTX64.EFI \
                 "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI"
         install -m755 /usr/lib/kinini/BOOTX64.EFI \
