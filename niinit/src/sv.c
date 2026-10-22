@@ -153,6 +153,10 @@ static void start_svc(void)
                 }
                 umask(022);
                 execl(runpath, runpath, (char *)0);
+                /* a script without a shebang fails execve with ENOEXEC:
+                 * fall back to running it through /bin/sh like sysvinit */
+                if (errno == ENOEXEC)
+                        execl("/bin/sh", "sh", runpath, (char *)0);
                 _exit(127);
         }
         svc_pid = p;

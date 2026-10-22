@@ -1,3 +1,4 @@
+#!/bin/sh
 # DHCP client service for wired interfaces, disabled by default.
 # enable:   svctl enable dhcpcd && svctl start dhcpcd
 # disable:  svctl stop dhcpcd && svctl disable dhcpcd
@@ -6,7 +7,7 @@
 #   -B  --nobackground, stay in the foreground under the supervisor
 #   -M  master mode, manage all interfaces
 #   -q  quieter output
-[ -x /usr/sbin/dhcpcd ] || {
+[ -x /usr/bin/dhcpcd ] || {
         echo "dhcpcd: dhcpcd not installed" >&2
         exit 1
 }
