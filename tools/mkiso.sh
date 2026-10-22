@@ -357,7 +357,7 @@ echo "mkiso: packing initramfs"
 # a second, smaller initramfs for the disk installer: mounts root=UUID=...
 DINITRD=$WORK/initramfs-disk
 mkdir -p "$DINITRD/bin" "$DINITRD/modules" "$DINITRD/newroot" "$DINITRD/proc" \
-        "$DINITRD/sys" "$DINITRD/dev"
+        "$DINITRD/sys" "$DINITRD/dev" "$DINITRD/run/cryptsetup"
 cp "$BUSYBOX" "$DINITRD/bin/busybox"
 chmod 755 "$DINITRD/bin/busybox"
 if [ "$KININI_STAGED" = 1 ]; then
@@ -373,7 +373,7 @@ cat > "$DINITRD/init" <<'EOF'
 #!/bin/busybox sh
 BB=/bin/busybox
 export LD_LIBRARY_PATH=/usr/lib
-$BB mkdir -p /proc /sys /dev /newroot
+$BB mkdir -p /proc /sys /dev /newroot /run /run/cryptsetup
 $BB mount -t proc proc /proc
 $BB mount -t sysfs sysfs /sys
 $BB mount -t devtmpfs devtmpfs /dev 2>/dev/null || $BB mdev -s
