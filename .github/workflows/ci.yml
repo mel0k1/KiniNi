@@ -30,9 +30,7 @@ jobs:
       - name: build
         run: make -C /src
       - name: lint scripts
-        run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh \
-          /src/tools/test-boot.sh /src/tools/kiwi-install /src/tools/mkkernel.sh \
-          /src/skel/etc/niinit/1 /src/skel/etc/niinit/services-available/scx/run
+        run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh /src/tools/test-boot.sh /src/tools/kiwi-install /src/tools/mkkernel.sh /src/skel/etc/niinit/1 /src/skel/etc/niinit/services-available/scx/run /src/skel/etc/profile.d/10-locale.sh
       - name: smoke test supervisor
         run: /src/niinit/test-sv.sh
 
@@ -128,7 +126,7 @@ jobs:
           xbps-install -y gcc make pkg-config libxbps-devel libarchive-devel \
             openssl-devel git cpio xorriso syslinux zstd wget \
             mtools dosfstools grub grub-x86_64-efi edk2-ovmf qemu-img \
-            flex bison bc pahole libelf-devel perl
+            flex bison bc pahole elfutils-devel perl
           xbps-install -y qemu-system-amd64 || xbps-install -y qemu-system-x86_64
       - name: build static busybox
         run: |
