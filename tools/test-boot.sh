@@ -279,7 +279,27 @@ verify)
         echo "test-boot: [$FW] booting installed system from disk (scenario=$SCENARIO)"
         start_qemu -drive file="$DISK",if=virtio,format=raw
         if [ "$SCENARIO" = luks ]; then
-                wait_for "luks passphrase" "waiting for the LUKS prompt"
+                # the initramfs must ask for the LUKS passphrase; if grub
+                # cannot find its config it drops to the rescue shell -
+                # interrogate it over the console and fail with the output
+                n=0
+                while :; do
+                        grep -qs "luks passphrase" "$LOG" && break
+                        if grep -qs "grub>" "$LOG"; then
+                                send 'ls'
+                                send 'ls (hd0,gpt1)/'
+                                send 'ls (hd0,gpt1)/boot/'
+                                send 'ls (hd0,gpt1)/boot/grub/'
+                                sleep 4
+                                fail "grub rescue instead of the LUKS prompt (grub ls output above)"
+                        fi
+                        if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
+                                fail "qemu exited early (waiting for: luks passphrase)"
+                        fi
+                        [ "$n" -ge 600 ] && fail "no LUKS passphrase prompt after 10 min"
+                        sleep 2
+                        n=$(( n + 2 ))
+                done
                 send kiwi123
                 echo "test-boot: [$FW] LUKS passphrase accepted"
         fi

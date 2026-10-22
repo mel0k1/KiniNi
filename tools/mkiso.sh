@@ -562,8 +562,11 @@ if [ "$UEFI" = 1 ]; then
         # installed ext4 root (plain), and on the ESP (LUKS installs,
         # where kiwi-install mirrors the /boot layout onto the ESP).
         cat > "$WORK/early.cfg" <<'EOF'
+echo KININI-EFI: searching for the boot marker
 search --file --set=root /.kinini-live
+echo KININI-EFI: root=$root
 set prefix=($root)/boot/grub
+echo KININI-EFI: loading ($prefix)/grub.cfg
 normal
 EOF
         if ! "$GRUB_MKIMAGE" -O x86_64-efi -d "$GRUB_EFI_DIR" \
