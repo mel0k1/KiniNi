@@ -650,12 +650,12 @@ EOF
         # root and the ESP carry the marker; either boots completely.
         msg "staging kernel + initramfs + grub.cfg on the ESP"
         mkdir -p "$TARGET/boot/efi/EFI/BOOT" "$TARGET/boot/efi/EFI/kinini" \
-                "$TARGET/boot/efi/boot"
+                "$TARGET/boot/efi/boot/grub"
         cp "$TARGET/boot/vmlinuz-$KVER" \
                 "$TARGET/boot/efi/boot/vmlinuz-$KVER"
         cp "$TARGET/boot/initramfs.img" \
                 "$TARGET/boot/efi/boot/initramfs.img"
-        cat > "$TARGET/boot/efi/boot/grub.cfg" <<EOF
+        cat > "$TARGET/boot/efi/boot/grub/grub.cfg" <<EOF
 set timeout=3
 set default=0
 
