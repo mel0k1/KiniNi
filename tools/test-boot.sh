@@ -258,6 +258,7 @@ verify)
                 wait_for "LUKSDEV_OK" "waiting for the LUKS device check"
                 send 'readlink /etc/localtime | grep -q Europe/Moscow && echo TZ_OK'
                 wait_for "TZ_OK" "waiting for the timezone check"
+                # shellcheck disable=SC2016
                 send 'echo "LANG=$LANG" | grep -q ru_RU.UTF-8 && echo LOC_OK'
                 wait_for "LOC_OK" "waiting for the locale check"
                 send 'locale -a 2>/dev/null | grep -qi ru_RU && echo LOCGEN_OK'

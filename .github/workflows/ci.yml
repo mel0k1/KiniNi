@@ -124,7 +124,7 @@ jobs:
           xbps-install -y -Su xbps
           xbps-install -y -u
           xbps-install -y gcc make pkg-config libxbps-devel libarchive-devel \
-            openssl-devel git cpio xorriso syslinux zstd wget \
+            openssl-devel git cpio xorriso syslinux zstd wget xz \
             mtools dosfstools grub grub-x86_64-efi edk2-ovmf qemu-img \
             flex bison bc pahole elfutils-devel perl
           xbps-install -y qemu-system-amd64 || xbps-install -y qemu-system-x86_64
