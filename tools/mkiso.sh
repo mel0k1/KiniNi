@@ -529,8 +529,20 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
                 esac
                 cp -L "$lib" "$DINITRD/usr/lib/$(basename "$lib")"
         done
-        # verify the copied tree resolves cleanly
-        if ! LD_LIBRARY_PATH="$DINITRD/usr/lib" \
+        # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2:
+        # the loader must exist at that exact path too, or the kernel's
+        # execve of cryptsetup fails with ENOENT (silently eaten by the
+        # init's 2>/dev/null)
+        mkdir -p "$DINITRD/lib64"
+        cp -L "$ROOT/usr/lib/ld-linux-x86-64.so.2" \
+                "$DINITRD/lib64/ld-linux-x86-64.so.2"
+        # verify the closure by executing cryptsetup the way the guest
+        # kernel would (through PT_INTERP inside the chroot); fall back
+        # to an explicit-loader check when chroot is unavailable
+        if [ "$(id -u)" = 0 ] && command -v chroot >/dev/null 2>&1; then
+                chroot "$DINITRD" /usr/bin/cryptsetup --version >/dev/null 2>&1 \
+                        || die "cryptsetup cannot exec inside the initramfs (PT_INTERP/paths)"
+        elif ! LD_LIBRARY_PATH="$DINITRD/usr/lib" \
                 "$DINITRD/usr/lib/ld-linux-x86-64.so.2" --list \
                 "$DINITRD/usr/bin/cryptsetup" >/dev/null 2>&1; then
                 die "cryptsetup closure incomplete in the disk initramfs"
