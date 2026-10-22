@@ -554,13 +554,15 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
         echo "mkiso: closure copied: $(find "$DINITRD/usr/lib" -type f | wc -l) files"
         echo "mkiso: closure names: $(ls "$DINITRD/usr/lib" | tr '\n' ' ')"
         # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2 and
-        # the loader finds libraries through its default dirs (/lib,
-        # /usr/lib) - mirror the rootfs layout so both the PT_INTERP and
-        # plain execve work without relying on LD_LIBRARY_PATH
+        # the loader's compiled-in system search path is /usr/lib64 only
+        # (not /usr/lib!) - the rootfs bridges that with symlinks, the
+        # initramfs must have the same:
+        #   /lib -> usr/lib, /lib64 -> usr/lib, /usr/lib64 -> lib
         cp -L "$ROOT/usr/lib/ld-linux-x86-64.so.2" \
                 "$DINITRD/usr/lib/ld-linux-x86-64.so.2"
         ln -s usr/lib "$DINITRD/lib"
         ln -s usr/lib "$DINITRD/lib64"
+        ln -s lib "$DINITRD/usr/lib64"
         # verify the closure by executing cryptsetup the way the guest
         # kernel would (through PT_INTERP inside the chroot); fall back
         # to an explicit-loader check when chroot is unavailable
