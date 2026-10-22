@@ -538,7 +538,10 @@ if [ -n "$LOCALE" ]; then
                         "$TARGET/etc/default/libc-locales"
                 msg "generating locale data (glibc-locales)"
                 # xbps-reconfigure runs the glibc-locales install script
-                # which needs /proc, /dev (at least /dev/null) and /sys
+                # which needs /proc, /dev (at least /dev/null) and /sys.
+                # the tar copy skips live mountpoints (--one-file-system)
+                # so the directories must exist before the bind mounts
+                mkdir -p "$TARGET/proc" "$TARGET/dev" "$TARGET/sys"
                 mount -t proc proc "$TARGET/proc" 2>/dev/null || true
                 mount -o bind /dev "$TARGET/dev" 2>/dev/null || true
                 mount -t sysfs sys "$TARGET/sys" 2>/dev/null || true

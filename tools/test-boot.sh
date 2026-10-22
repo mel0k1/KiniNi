@@ -323,8 +323,22 @@ verify)
                 # shellcheck disable=SC2016
                 send 'echo "LANG=$LANG" | grep -q ru_RU.UTF-8 && echo "LOC""_OK"'
                 wait_for "LOC_OK" "waiting for the locale check"
-                send 'locale -a 2>/dev/null | grep -qi ru_RU && echo "LOCGEN""_OK" || { echo "=== LOCGEN DIAG ==="; tail -5 /var/log/locale-gen.log 2>/dev/null; locale -a 2>/dev/null | head -5; }'
-                wait_for "LOCGEN_OK" "waiting for the locale generation check"
+                # shellcheck disable=SC2016
+                send 'locale -a 2>/dev/null | grep -qi ru_RU && echo "LOCGEN""_OK"'
+                n=0
+                while ! grep -qs "LOCGEN_OK" "$LOG"; do
+                        if [ "$n" -ge 720 ]; then
+                                send 'echo "=== LOCGEN DIAG ==="; tail -8 /var/log/locale-gen.log 2>/dev/null; locale -a 2>/dev/null | head -5'
+                                sleep 4
+                                fail "ru_RU locale not generated (diag above)"
+                        fi
+                        if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
+                                fail "qemu exited early (waiting for: LOCGEN_OK)"
+                        fi
+                        sleep 2
+                        n=$(( n + 2 ))
+                done
+                echo "test-boot: [$FW] locale generation verified"
                 send 'grep -qs "mapper/swap" /proc/swaps && echo "SWAPENC""_OK"'
                 wait_for "SWAPENC_OK" "waiting for the encrypted swap check"
                 send 'dmesg | grep -q "sched_ext.*enabled" && echo "SCX""_OK" || { dmesg | grep -i sched_ext | tail -3; false; }'

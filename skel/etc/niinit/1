@@ -22,6 +22,10 @@ mountpoint -q /run     || mount -t tmpfs run /run
 # bpffs: sched_ext schedulers (scx service) pin their BPF objects there
 mkdir -p /sys/fs/bpf
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
+# debugfs: scx schedulers read cpu frequency/idle stats there; without
+# it scx_lavd & co. abort with "No debugfs mount found"
+mkdir -p /sys/kernel/debug
+mountpoint -q /sys/kernel/debug || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
 mount -a 2>/dev/null || true
 # apply system tuning; KiniNi defaults live in /usr/lib/sysctl.d
 # (CachyOS-inspired: 70-kinini-settings.conf)
