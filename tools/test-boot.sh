@@ -205,6 +205,9 @@ verify)
         wait_for "Password" "waiting for password prompt"
         sleep 1
         send kinini
+        # login flushes the pending tty input when handing over to the
+        # shell, so sync on the prompt shape before sending markers
+        wait_for "-bash-" "waiting for the post-login shell"
         send 'echo LOGIN_OK'
         wait_for "LOGIN_OK" "waiting for login"
         echo "test-boot: [$FW] installed system booted, logged in"
