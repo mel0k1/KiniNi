@@ -132,9 +132,12 @@ mkfifo "$TMP/in"
 
 start_qemu() {
         # start_qemu <extra args...>
+        # pin the NIC explicitly: both kernels support e1000 (module in
+        # the Void kernel, builtin in the KiniNi kernel) and the user
+        # backend provides the SLIRP DHCP server the tests rely on
         # shellcheck disable=SC2086
         "$QEMU" -m 1024 -smp 2 -accel tcg -display none -monitor none \
-                -serial stdio -no-reboot $FIRMARGS "$@" \
+                -serial stdio -no-reboot -nic user,model=e1000 $FIRMARGS "$@" \
                 < "$TMP/in" >> "$LOG" 2>&1 &
         QPID=$!
         # hold the fifo open for this session; typed input is buffered by
@@ -220,14 +223,14 @@ check_basic_tuning() {
 }
 
 # wait for a SLIRP DHCP lease (dhcpcd -M runs from the niinit service).
-# bounded in the guest: after 90s without a lease the guest prints a
+# bounded in the guest: after 30s without a lease the guest prints a
 # diagnostics block (interfaces, packet counters, service state, dmesg)
 # and the harness fails immediately after seeing its END marker.
 dhcp_check() {
         # shellcheck disable=SC2016  # the whole command runs in the guest
-        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 45 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr; ip link; cat /proc/net/dev; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; cat /etc/niinit/services/dhcpcd/stat 2>/dev/null; dmesg | grep -iE "e1000|virtio_net|enp|eth" | tail -12; echo "=== END ""DIAG ==="; fi'
+        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 14 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr; ip link; cat /proc/net/dev; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; cat /etc/niinit/services/dhcpcd/stat 2>/dev/null; dmesg | grep -iE "e1000|virtio_net|enp|eth" | tail -12; echo "=== END ""DIAG ==="; fi'
         n=0
-        while [ "$n" -lt 75 ]; do
+        while [ "$n" -lt 90 ]; do
                 grep -qs "DHCP_OK" "$LOG" && {
                         echo "test-boot: [$FW] DHCP lease verified"
                         return 0
@@ -235,7 +238,7 @@ dhcp_check() {
                 grep -qs "END DIAG" "$LOG" \
                         && fail "no DHCP lease (diagnostics above in the console tail)"
                 sleep 2
-                n=$(( n + 2 ))
+                n=$(( n + 1 ))
         done
         fail "DHCP check inconclusive (no marker, no diagnostics)"
 }

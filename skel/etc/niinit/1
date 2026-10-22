@@ -14,9 +14,11 @@ mountpoint -q /run     || mount -t tmpfs run /run
         >/dev/null 2>&1 || true
 # scheduler/qdisc/modules for the tuning and mounts below (bfq for HDDs
 # per 66-kinini-iosched.rules, bbr+fq per 70-kinini-settings.conf, vfat
-# for the ESP on UEFI installs, sched_ext for the scx service)
+# for the ESP on UEFI installs, sched_ext for the scx service). NIC
+# drivers too: the live Void kernel ships them as modules and dhcpcd
+# needs the interface up early; builtin in the KiniNi kernel (no-op).
 [ -x /usr/bin/modprobe ] && modprobe -q bfq tcp_bbr sch_fq zram vfat fat \
-        nls_cp437 sched_ext 2>/dev/null || true
+        nls_cp437 sched_ext e1000 e1000e virtio_net 2>/dev/null || true
 # bpffs: sched_ext schedulers (scx service) pin their BPF objects there
 mkdir -p /sys/fs/bpf
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
