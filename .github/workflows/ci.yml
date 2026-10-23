@@ -164,7 +164,7 @@ jobs:
       - name: build kinini kernel (sched_ext)
         timeout-minutes: 120
         run: |
-          KVER=6.12.114
+          KVER=6.18.58
           wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
           /src/tools/mkkernel.sh "linux-$KVER.tar.xz" /tmp/kernel-out
           install -Dm644 /tmp/kernel-out/vmlinuz-kinini /tmp/rootfs/usr/lib/kinini/vmlinuz-kinini
@@ -183,7 +183,7 @@ jobs:
             -append "console=ttyS0,115200n8 earlyprintk=serial,ttyS0,115200" \
             </dev/null > /tmp/smoke.log 2>&1 || true
           tail -30 /tmp/smoke.log
-          grep -q "Linux version 6.12.114-kinini" /tmp/smoke.log \
+          grep -q "Linux version 6.18.58-kinini" /tmp/smoke.log \
             || { echo "smoke: kernel banner missing - the kernel does not boot"; exit 1; }
           grep -q "no root=" /tmp/smoke.log \
             || { echo "smoke: initramfs did not reach the root check"; exit 1; }

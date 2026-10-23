@@ -77,7 +77,7 @@ kiwi mascot in place for `fastfetch`.
 ## Live ISO
 
 `tools/mkiso.sh` turns a rootfs into a bootable hybrid ISO — Linux kernel
-6.12, a busybox initramfs that finds the medium and mounts an overlayfs root
+6.12 (live), a busybox initramfs that finds the medium and mounts an overlayfs root
 (all writes go to a tmpfs layer, the medium stays untouched), isolinux for
 BIOS and a standalone grub `x86_64-efi` on an appended FAT ESP for UEFI
 (same `grub-mkrescue`-style image boots CDs and USB sticks on both firmware
@@ -276,7 +276,7 @@ required.
 ## sched_ext CPU schedulers (CachyOS-style)
 
 CachyOS's defining feature is the kernel, and KiniNi follows suit: every
-installed system boots the **KiniNi kernel** — a pure vanilla LTS (6.12.x,
+installed system boots the **KiniNi kernel** — a pure vanilla stable (6.18.x,
 no patches) built in CI from `kernel/kinini-x86_64.config` over `allnoconfig`
 with `CONFIG_SCHED_CLASS_EXT=y` and BTF on. Void's own kernels ship with
 sched_ext disabled, so the distro builds its own — everything the installed
@@ -377,7 +377,7 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 - `kipki` — пакетный менеджер на libxbps: транзакции с предпросмотром,
   поиск, сироты, hold, локальный журнал операций;
 - `tools/mkrootfs.sh` — сборка корня из репозиториев Void;
-- `tools/mkiso.sh` — загрузочный live-ISO: ядро 6.12, initramfs на busybox,
+- `tools/mkiso.sh` — загрузочный live-ISO: live-ядро Void 6.12, initramfs на busybox,
   isolinux (BIOS) и grub x86_64-efi на ESP (UEFI) в одном гибридном образе,
   корень на overlayfs; sshd и dhcpcd лежат в `services-available`, на live
   DHCP включён сразу;
@@ -396,7 +396,7 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
   сервис `scx` гоняет выбранный планировщик под супервизией niinit
   (без D-Bus, конфиг `/etc/kinini/scx.conf`), stage-1 монтирует bpffs
   и грузит модуль sched_ext;
-- **kinini-kernel** — своё ядро как у CachyOS: чистый vanilla LTS 6.12.x
+- **kinini-kernel** — своё ядро как у CachyOS: чистый vanilla 6.18.x
   без патчей, собирается в CI из `kernel/kinini-x86_64.config` поверх
   allnoconfig — `CONFIG_SCHED_CLASS_EXT=y` + BTF, все нужные драйверы
   встроены в ядро (ext4, virtio, AHCI/NVMe, dm-crypt, zram, bfq/kyber,
