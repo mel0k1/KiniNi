@@ -350,7 +350,11 @@ verify)
                         n=$(( n + 2 ))
                 done
                 echo "test-boot: [$FW] locale generation verified"
-                send 'grep -qs "mapper/swap" /proc/swaps && echo "SWAPENC""_OK"'
+                # /proc/swaps prints the RESOLVED device path: swapon()
+                # follows the /dev/mapper/swap symlink, so the kernel
+                # reports /dev/dm-N. check the cryptsetup mapping and
+                # the active dm swap instead of the symlink name
+                send 'cryptsetup status swap >/dev/null 2>&1 && grep -qs "^/dev/dm-" /proc/swaps && echo "SWAPENC""_OK"'
                 n=0
                 while ! grep -qs "SWAPENC_OK" "$LOG"; do
                         if [ "$n" -ge 120 ]; then
