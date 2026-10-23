@@ -6,7 +6,14 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCX=$ROOT/skel/usr/bin/kinini-scx
 NIBIN=$ROOT/niinit/bin
 T=$(mktemp -d /tmp/nsctest.XXXXXX)
-trap 'kill ${SVPID:-0} 2>/dev/null || true; rm -rf $T' EXIT
+cleanup() {
+        if [ -n "${SVPID:-}" ]; then
+                kill "$SVPID" 2>/dev/null || true
+                wait "$SVPID" 2>/dev/null || true   # supervisor writes stat on the way out
+        fi
+        rm -rf "$T"
+}
+trap cleanup EXIT
 
 mkdir -p "$T/bin" "$T/svdir/scx" "$T/avail/scx"
 printf '#!/bin/sh\nexec scx_lavd\n' > "$T/avail/scx/run"

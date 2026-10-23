@@ -13,6 +13,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
         if [ -n "${DIRPID:-}" ]; then
                 kill "$DIRPID" 2>/dev/null || true
+                # svdir stops the supervisors on the way out and they
+                # still write stat files: wait before removing the tree
+                wait "$DIRPID" 2>/dev/null || true
         fi
         rm -rf "$T"
 }
