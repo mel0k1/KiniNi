@@ -1,0 +1,3 @@
+# crypttab resolves sources by PARTUUID: the udev event replay
+# must have populated /dev/disk/by-* first
+20-udev-trigger

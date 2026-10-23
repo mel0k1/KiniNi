@@ -1,0 +1,4 @@
+# zram-swap loads the zram module (10-modules) and raises
+# vm.swappiness, so the sysctl pass (30-sysctl) must be done first
+10-modules
+30-sysctl

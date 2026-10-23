@@ -1,4 +1,12 @@
 #!/bin/sh
+# stage 1: mount the base filesystems and prepare the system for services
+#
+# the sequential part below is the critical path (nothing else can start
+# without /proc, /sys, /dev and udevd). everything independent of it lives
+# in /etc/niinit/1.d/ and runs in parallel afterwards via niinit-parallel:
+# tasks there may declare prerequisites in <task>.deps files (see
+# 60-crypttab.deps, 70-zram-swap.deps) - a task waits for its deps, a
+# failed dep skips the dependents, boot never stops on a failed task.
 mountpoint -q /proc  || mount -t proc proc /proc
 mountpoint -q /sys   || mount -t sysfs sys /sys
 mountpoint -q /dev   || mount -t devtmpfs dev /dev
@@ -8,85 +16,17 @@ mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
 mountpoint -q /dev/shm || mount -t tmpfs shm /dev/shm
 mountpoint -q /run     || mount -t tmpfs run /run
 [ -x /usr/bin/udevd ] && udevd --daemon
-# replay uevents for devices that already exist, so udev rules (IO
-# scheduler selection etc.) and driver autoloading apply at boot
-[ -x /usr/bin/udevadm ] && udevadm trigger --type=devices --action=add \
-        >/dev/null 2>&1 || true
-# scheduler/qdisc/modules for the tuning and mounts below (bfq for HDDs
-# per 66-kinini-iosched.rules, bbr+fq per 70-kinini-settings.conf, vfat
-# for the ESP on UEFI installs, sched_ext for the scx service). NIC
-# drivers too: the live Void kernel ships them as modules and dhcpcd
-# needs the interface up early; builtin in the KiniNi kernel (no-op).
-[ -x /usr/bin/modprobe ] && modprobe -q bfq tcp_bbr sch_fq zram vfat fat \
-        nls_cp437 sched_ext e1000 e1000e virtio_net 2>/dev/null || true
-# bpffs: sched_ext schedulers (scx service) pin their BPF objects there
-mkdir -p /sys/fs/bpf
-mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
-# debugfs: scx schedulers read cpu frequency/idle stats there; without
-# it scx_lavd & co. abort with "No debugfs mount found"
-mkdir -p /sys/kernel/debug
-mountpoint -q /sys/kernel/debug || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
-mount -a 2>/dev/null || true
-# apply system tuning; KiniNi defaults live in /usr/lib/sysctl.d
-# (CachyOS-inspired: 70-kinini-settings.conf)
-for f in /usr/lib/sysctl.d/*.conf /etc/sysctl.d/*.conf; do
-        [ -f "$f" ] || continue
-        [ -x /usr/bin/sysctl ] && sysctl -q -e -p "$f" >/dev/null 2>&1 \
-                || true
-done
-# transparent hugepage defrag (CachyOS usr/lib/tmpfiles.d/thp.conf)
-[ -w /sys/kernel/mm/transparent_hugepage/defrag ] && \
-        echo defer+madvise > /sys/kernel/mm/transparent_hugepage/defrag \
-        2>/dev/null || true
-# encrypted swap from /etc/crypttab (4th field "swap"): ephemeral
-# plain dm-crypt with a random key, fresh swap on every boot. the
-# root LUKS volume is unlocked earlier, in the initramfs, and its
-# crypttab entry is skipped here (options do not contain "swap").
-if [ -f /etc/crypttab ] && [ -x /usr/bin/cryptsetup ]; then
-        # udev populates /dev/disk/by-partuuid asynchronously; give it
-        # a bounded moment before resolving PARTUUID= sources below
-        [ -x /usr/bin/udevadm ] && udevadm settle --timeout=10 \
-                >/dev/null 2>&1 || true
-        while read -r dst src key opts; do
-                [ -n "$dst" ] || continue
-                case "$dst" in '#'*) continue ;; esac
-                case " $opts " in
-                *" swap "*)
-                        case "$src" in
-                        PARTUUID=*) src="/dev/disk/by-partuuid/${src#PARTUUID=}" ;;
-                        esac
-                        n=0
-                        while [ ! -e "$src" ] && [ "$n" -lt 10 ]; do
-                                sleep 1
-                                n=$(( n + 1 ))
-                                [ -x /usr/bin/udevadm ] && \
-                                        udevadm settle --timeout=2 \
-                                        >/dev/null 2>&1 || true
-                        done
-                        [ -e "$src" ] || {
-                                echo "niinit: crypttab: $src not found" >&2
-                                continue
-                        }
-                        # no --size: it is in 512-byte sectors (the old
-                        # "--size 256" made a 128 KiB swap); with no
-                        # --size the mapped device covers the partition
-                        cryptsetup open --type plain --key-file="$key" \
-                                --cipher aes-xts-plain64 \
-                                "$src" "$dst" 2>/dev/null || {
-                                echo "niinit: crypttab: cannot open $src" >&2
-                                continue
-                        }
-                        mkswap "/dev/mapper/$dst" >/dev/null 2>&1 || true
-                        swapon "/dev/mapper/$dst" 2>/dev/null || true
-                        ;;
-                esac
-        done < /etc/crypttab
+# independent stage-1 tasks in parallel (udev event replay, sysctl
+# tuning, module loading, hugepage policy, pseudo-filesystems for BPF,
+# loopback, encrypted swap, zram)
+if [ -x /usr/bin/niinit-parallel ] && [ -d /etc/niinit/1.d ]; then
+        niinit-parallel /etc/niinit/1.d \
+                || echo "niinit: stage-1: some tasks failed (continuing)"
 fi
-# compressed RAM swap (CachyOS-style), see /etc/kinini/zram.conf;
-# runs after the sysctl pass because it raises vm.swappiness
-[ -x /usr/bin/zram-swap ] && /usr/bin/zram-swap start 2>/dev/null || true
+# mount -a comes after the parallel block: fstab entries may need
+# filesystem modules loaded there (vfat for the ESP on UEFI installs)
+mount -a 2>/dev/null || true
 swapon -a 2>/dev/null
 [ -f /etc/hostname ] && hostname "$(cat /etc/hostname)" 2>/dev/null
-ip link set up dev lo 2>/dev/null
 [ -f /etc/random-seed ] && cat /etc/random-seed > /dev/urandom
 exit 0

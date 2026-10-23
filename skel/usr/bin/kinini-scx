@@ -1,0 +1,172 @@
+#!/bin/sh
+# kinini-scx - manage sched_ext CPU schedulers at runtime (CachyOS-style)
+#
+#   kinini-scx status              kernel support, service state, scheduler
+#   kinini-scx list                schedulers shipped by the 'scx' package
+#   kinini-scx use SCHED [--now]   set the scheduler; --now restarts scx
+#   kinini-scx on|off              enable/disable the scx service
+#   kinini-scx top                 run scxtop (live scheduler metrics)
+#   kinini-scx log [N]             tail the scheduler log (default 50)
+#
+# the scheduler runs in the foreground under the niinit supervisor
+# (service 'scx'), so switching is a supervised restart: no D-Bus, no
+# scx_loader. persistent configuration: /etc/kinini/scx.conf.
+
+set -u
+
+CONF=${KININI_SCX_CONF:-/etc/kinini/scx.conf}
+SVC=scx
+SVDIR=${NIINIT_SVDIR:-/etc/niinit/services}
+LOG=${KININI_SCX_LOG:-/var/log/scx.log}
+# schedulers ship in /usr/bin (the 'scx' package); overridable for tests
+SCXBIN=${KININI_SCX_BIN:-/usr/bin}
+
+die() {
+        echo "kinini-scx: $*" >&2
+        exit 1
+}
+
+usage() {
+        sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+        exit "${1:-0}"
+}
+
+# the SCX_SCHEDULER= value from the config (last assignment wins)
+configured() {
+        [ -f "$CONF" ] || return 0
+        sed -n 's/^SCX_SCHEDULER="\{0,1\}\([^"#]*[^"#" \t]\)"\{0,1\}[ \t]*$/\1/p' \
+                "$CONF" | tail -n 1
+}
+
+# what the supervisor is actually running right now: the service pid is
+# the scheduler itself (the run script execs into it)
+running() {
+        [ -r "$SVDIR/$SVC/pid" ] || return 0
+        read -r pid < "$SVDIR/$SVC/pid"
+        case "${pid:-}" in
+        '' | *[!0-9]*) return 0 ;;
+        esac
+        [ -r "/proc/$pid/cmdline" ] || return 0
+        tr '\0' ' ' < "/proc/$pid/cmdline"
+}
+
+cmd_status() {
+        if [ -d /sys/kernel/sched_ext ]; then
+                echo "sched_ext:   available in the running kernel"
+        else
+                echo "sched_ext:   NOT available in the running kernel"
+                echo "             (needs the KiniNi kernel, or linux 6.12+"
+                echo "              built with CONFIG_SCHED_CLASS_EXT)"
+        fi
+        printf 'configured:  %s\n' "$(configured)"
+        if [ -r "$SVDIR/$SVC/stat" ]; then
+                printf 'service:     %s (%s)\n' "$SVC" "$(cat "$SVDIR/$SVC/stat")"
+        else
+                echo "service:     $SVC is not supervised"
+        fi
+        r=$(running)
+        [ -n "$r" ] && printf 'scheduler:   %s\n' "$r"
+        return 0
+}
+
+cmd_list() {
+        conf=$(configured)
+        found=0
+        for f in "$SCXBIN"/scx_*; do
+                [ -x "$f" ] || continue
+                found=1
+                b=${f##*/}
+                if [ "$b" = "$conf" ]; then
+                        printf '%-16s (configured)\n' "$b"
+                else
+                        printf '%s\n' "$b"
+                fi
+        done
+        [ "$found" = 1 ] || {
+                echo "no schedulers installed (kipki install scx)"
+                return 1
+        }
+        return 0
+}
+
+cmd_use() {
+        [ $# -ge 1 ] || die "use: missing scheduler name (try: kinini-scx list)"
+        name=$1
+        shift
+        case "$name" in
+        *[!a-z0-9_]*) die "use: invalid scheduler name '$name'" ;;
+        esac
+        [ -x "$SCXBIN/$name" ] \
+                || die "scheduler '$name' is not installed (available: kinini-scx list)"
+        [ -f "$CONF" ] || die "$CONF not found"
+        if grep -q '^SCX_SCHEDULER=' "$CONF"; then
+                sed -i "s/^SCX_SCHEDULER=.*/SCX_SCHEDULER=$name/" "$CONF"
+        else
+                printf 'SCX_SCHEDULER=%s\n' "$name" >> "$CONF"
+        fi
+        echo "kinini-scx: scheduler set to $name"
+        now=0
+        for a in "$@"; do
+                [ "$a" = "--now" ] && now=1
+        done
+        if [ "$now" = 1 ]; then
+                if svctl restart "$SVC" >/dev/null 2>&1; then
+                        echo "kinini-scx: $SVC service restarted with $name"
+                else
+                        echo "kinini-scx: $SVC service is not running;"
+                        echo "            $name applies when it starts (boot, or: kinini-scx on)"
+                fi
+        else
+                echo "kinini-scx: takes effect on next boot, or run now:"
+                echo "            kinini-scx use $name --now"
+        fi
+        return 0
+}
+
+cmd_service() {
+        what=$1
+        case "$what" in
+        off)
+                svctl disable "$SVC" 2>/dev/null || true
+                svctl down "$SVC" 2>/dev/null || true
+                echo "kinini-scx: $SVC disabled (will not start at boot); stopped if it was running"
+                ;;
+        on)
+                svctl enable "$SVC" 2>/dev/null \
+                        || die "$SVC service not found in services-available"
+                if svctl up "$SVC" 2>/dev/null; then
+                        echo "kinini-scx: $SVC enabled and started"
+                else
+                        echo "kinini-scx: $SVC enabled; starts on the next supervisor scan or boot"
+                fi
+                ;;
+        *)
+                die "service: unknown command '$what'"
+                ;;
+        esac
+        return 0
+}
+
+cmd_top() {
+        [ -x "$SCXBIN/scxtop" ] || die "scxtop is not installed (kipki install scx)"
+        exec "$SCXBIN/scxtop" "$@"
+}
+
+cmd_log() {
+        [ -f "$LOG" ] || die "no log yet ($LOG)"
+        n=${1:-50}
+        case "$n" in *[!0-9]*) die "log: line count must be numeric" ;; esac
+        exec tail -n "$n" "$LOG"
+}
+
+case "${1:-}" in
+status)  shift; cmd_status "$@" ;;
+list)    shift; cmd_list "$@" ;;
+use)     shift; cmd_use "$@" ;;
+on|off)  cmd_service "$1" ;;
+top)     shift; cmd_top "$@" ;;
+log)     shift; cmd_log "$@" ;;
+-h|--help|help) usage 0 ;;
+"")      usage 1 ;;
+*)       die "unknown command '$1' (try: kinini-scx help)" ;;
+esac

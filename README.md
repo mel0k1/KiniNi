@@ -42,12 +42,14 @@ and surprisingly resilient. The ASCII bird greets you on every console via
 |-----------|------------|----------|
 | **niinit** | PID 1: three-stage boot (like runit), orphan reaping, reboot/poweroff/halt signaling | C99 |
 | **niinit-sv** | Per-service supervisor: restart on crash, `finish` scripts, `down` files, runit-compatible control FIFO (`u d o t k p c h a i q 1 2 x`), `stat`/`pid` files | C99 |
-| **niinit-svdir** | Watches `/etc/niinit/services`, spawns/stops supervisors as dirs appear/vanish | C99 |
+| **niinit-svdir** | Watches `/etc/niinit/services`, spawns/stops supervisors as dirs appear/vanish; honors `deps` files — a service is spawned only when its dependencies are up (blocked state is visible in `stat`) | C99 |
 | **svctl** | `status` (with uptime) / `up` / `down` / `start` / `stop` / `restart` / `once` / `pause` / `cont` / signals / `check` / `enable` / `disable`; doubles as `reboot`/`poweroff`/`halt` | C99 |
+| **niinit-parallel** | Runs the independent stage-1 tasks concurrently, honoring `<task>.deps` files (waits, skips on failed deps, reports cycles) | C99 |
 | **kipki** | Package manager on libxbps: transactions, search, orphans, holds, local log | C + libxbps |
 | **mkrootfs** | Builds a rootfs from Void repositories | POSIX sh |
 | **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux + grub-efi (BIOS **and** UEFI), overlayfs root, disk installer on board | POSIX sh |
 | **kiwi-install** | Disk installer: partitions (msdos/GPT), LUKS2 root encryption, ephemeral encrypted swap, timezone + locale selection, sched_ext scheduler setup, offline extlinux (BIOS) or grub-on-ESP (UEFI) bootloader | POSIX sh |
+| **kinini-scx** | sched_ext scheduler selector: `status` / `list` / `use <sched> --now` (live switch) / `on` / `off` / `top` / `log` — CachyOS `scxctl` experience without D-Bus | POSIX sh |
 | **kinini-settings** | CachyOS-inspired tuning shipped in the skel: sysctl.d profile, per-device IO-scheduler udev rules, zram swap, watchdog blacklists | conf/sh |
 | **kinini kernel** | Vanilla Linux LTS built in CI over `allnoconfig` + a curated fragment: **sched_ext enabled**, BTF, all boot-critical drivers built in (no initramfs modules), zram/bfq/BBR onboard | config + CI |
 
@@ -163,6 +165,14 @@ runit conventions: a `down` file in a service dir prevents auto-start at
 boot, and a `finish` script runs after each service exit with the exit code
 and terminating signal as arguments.
 
+Services can also declare dependencies: a `deps` file inside the service
+dir lists service names (whitespace-separated, `#` comments). `niinit-svdir`
+spawns a service only once every dependency is enabled **and** up; until
+then the service shows `blocked (waiting for dep 'x')` in `svctl status`.
+Dependencies resolve transitively, a dependency cycle is visible in the
+stat files instead of hanging silently, and — runit semantics — a running
+service is not stopped when its dependency goes down.
+
 ```sh
 svctl status               # overview with pid and uptime
 svctl restart sshd         # up / down / start / stop / restart / once
@@ -175,10 +185,18 @@ halt                       # and even that
 ```
 
 The boot itself is three stages, exactly like runit: `/etc/niinit/1` mounts
-pseudo-filesystems and brings up udev and loopback, stage 2 supervises
-services until shutdown, and `/etc/niinit/3` unmounts everything back.
-PID 1 gives every process a grace period to exit on TERM before the final
-KILL, then runs stage 3.
+pseudo-filesystems and brings up udev, stage 2 supervises services until
+shutdown, and `/etc/niinit/3` unmounts everything back. PID 1 gives every
+process a grace period to exit on TERM before the final KILL, then runs
+stage 3.
+
+Stage 1 is parallel where it can be: after the critical path (base mounts +
+udevd) the independent work — udev event replay, sysctl tuning, module
+loading, hugepage policy, bpffs/debugfs, loopback, encrypted swap from
+crypttab, zram — runs concurrently from `/etc/niinit/1.d/`, ordered by
+`<task>.deps` files. `niinit-parallel` waits for dependencies, skips the
+dependents of a failed task and reports cycles; a failed task never stops
+the boot.
 
 ## Installing to disk
 
@@ -293,14 +311,21 @@ automatically and stopping the service falls back to the kernel cleanly.
 
 ```sh
 kipki install scx                # scx_lavd, scx_bpfland, scx_flash, ...
-svctl enable scx                 # enable at boot (services-available/scx)
-svctl start scx                  # attach now
-vi /etc/kinini/scx.conf          # SCX_SCHEDULER=scx_lavd, SCX_FLAGS=
-svctl restart scx
-dmesg | grep sched_ext           # "BPF scheduler \"scx_lavd\" enabled"
-scxtop                           # live scheduler/CPU telemetry
+kinini-scx on                    # enable + start the scx service
+kinini-scx status                # kernel support / configured / running
+kinini-scx list                  # what the scx package ships
+kinini-scx use scx_bpfland --now # switch scheduler live, no reboot
+kinini-scx top                   # scxtop, live scheduler/CPU telemetry
+kinini-scx log 100               # scheduler log tail
+dmesg | grep sched_ext           # "BPF scheduler \"scx_bpfland\" enabled"
 zcat /proc/config.gz | grep SCHED_CLASS_EXT   # the kernel tells its config
 ```
+
+`kinini-scx use` validates the scheduler binary, rewrites
+`SCX_SCHEDULER=` in `/etc/kinini/scx.conf` and — with `--now` — performs a
+supervised restart of the `scx` service, which is exactly what switching
+under CachyOS' `scx_loader` does, minus D-Bus. Without `--now` the choice
+applies at the next boot or service start.
 
 Scheduler cheat-sheet (same picks as the CachyOS wiki):
 
@@ -373,7 +398,13 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
   рестарт при падении, `svctl status|up|down|start|stop|restart|once|pause|
   cont|hup|usr1|usr2|term|check|enable|disable`, `status` показывает pid и
   uptime, а также `reboot`/`poweroff`/`halt`; PID 1 даёт процессам grace-период
-  на корректный выход перед KILL;
+  на корректный выход перед KILL; сервисы могут объявлять зависимости
+  (`deps`-файл: сервис стартует, только когда все зависимости включены и
+  подняты; `svctl status` показывает `blocked (...)`, циклы видны в stat);
+- `niinit-parallel` — параллельный запуск независимых задач stage-1
+  (`/etc/niinit/1.d/`): ожидание зависимостей из `<task>.deps`, пропуск
+  зависимых при падении, обнаружение циклов; падение задачи не останавливает
+  загрузку;
 - `kipki` — пакетный менеджер на libxbps: транзакции с предпросмотром,
   поиск, сироты, hold, локальный журнал операций;
 - `tools/mkrootfs.sh` — сборка корня из репозиториев Void;
@@ -395,7 +426,9 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
   (scx_lavd, scx_bpfland, scx_flash, scx_p2dq, scx_rusty, scx_layered,...),
   сервис `scx` гоняет выбранный планировщик под супервизией niinit
   (без D-Bus, конфиг `/etc/kinini/scx.conf`), stage-1 монтирует bpffs
-  и грузит модуль sched_ext;
+  и грузит модуль sched_ext; `kinini-scx` — выбор планировщика на лету:
+  `status` / `list` / `use <имя> --now` (живое переключение без перезагрузки)
+  / `on` / `off` / `top` / `log`;
 - **kinini-kernel** — своё ядро как у CachyOS: чистый vanilla 6.18.x
   без патчей, собирается в CI из `kernel/kinini-x86_64.config` поверх
   allnoconfig — `CONFIG_SCHED_CLASS_EXT=y` + BTF, все нужные драйверы
@@ -413,6 +446,12 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 **Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
 https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx`,
 затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`.
+
+**Загрузка:** три стадии, как в runit; stage-1 после критического пути
+(базовые монтирования + udevd) гоняет независимые задачи параллельно из
+`/etc/niinit/1.d/` (replay uevent, sysctl, модули, THP, bpffs/debugfs,
+loopback, шифрованный swap из crypttab, zram) с упорядочиванием через
+`<task>.deps`.
 
 **Установка на диск:** загрузите ISO (BIOS или UEFI — установщик
 определяет прошивку сам) и выполните:

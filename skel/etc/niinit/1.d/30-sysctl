@@ -1,0 +1,8 @@
+#!/bin/sh
+# apply system tuning; KiniNi defaults live in /usr/lib/sysctl.d
+# (CachyOS-inspired: 70-kinini-settings.conf)
+for f in /usr/lib/sysctl.d/*.conf /etc/sysctl.d/*.conf; do
+        [ -f "$f" ] || continue
+        [ -x /usr/bin/sysctl ] && sysctl -q -e -p "$f" >/dev/null 2>&1 \
+                || true
+done

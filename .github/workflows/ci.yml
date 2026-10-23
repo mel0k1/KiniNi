@@ -30,7 +30,20 @@ jobs:
       - name: build
         run: make -C /src
       - name: lint scripts
-        run: shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh /src/tools/test-boot.sh /src/tools/kiwi-install /src/tools/mkkernel.sh /src/skel/etc/niinit/1 /src/skel/etc/niinit/services-available/scx/run /src/skel/etc/profile.d/10-locale.sh
+        run: |
+          shellcheck /src/tools/mkrootfs.sh /src/tools/mkiso.sh \
+            /src/tools/test-boot.sh /src/tools/kiwi-install \
+            /src/tools/mkkernel.sh /src/skel/etc/niinit/1 \
+            /src/skel/etc/niinit/services-available/scx/run \
+            /src/skel/usr/bin/kinini-scx /src/skel/usr/bin/zram-swap \
+            /src/skel/etc/profile.d/10-locale.sh \
+            /src/niinit/test-parallel.sh /src/niinit/test-deps.sh \
+            /src/niinit/test-sv.sh /src/niinit/test-scx.sh
+          # 1.d tasks are shell; .deps files are plain dependency lists
+          for f in /src/skel/etc/niinit/1.d/*; do
+            case "$f" in *.deps) continue ;; esac
+            shellcheck "$f"
+          done
       - name: service scripts must have shebangs
         run: |
           for f in /src/skel/etc/niinit/services/*/run \
@@ -41,6 +54,15 @@ jobs:
           done
       - name: smoke test supervisor
         run: /src/niinit/test-sv.sh
+
+      - name: smoke test niinit-parallel
+        run: /src/niinit/test-parallel.sh
+
+      - name: smoke test service dependencies
+        run: /src/niinit/test-deps.sh
+
+      - name: smoke test kinini-scx
+        run: /src/niinit/test-scx.sh
 
       - name: smoke test svdir
         run: |
@@ -115,9 +137,17 @@ jobs:
           test ! -e /tmp/rootfs/etc/niinit/services/scx
           test -f /tmp/rootfs/etc/kinini/scx.conf
           test -f /tmp/rootfs/etc/profile.d/10-locale.sh
+          test -x /tmp/rootfs/usr/bin/niinit-parallel
+          test -x /tmp/rootfs/usr/bin/kinini-scx
+          test -x /tmp/rootfs/etc/niinit/1.d/10-modules
+          test -x /tmp/rootfs/etc/niinit/1.d/60-crypttab
+          test -f /tmp/rootfs/etc/niinit/1.d/60-crypttab.deps
+          test -f /tmp/rootfs/etc/niinit/1.d/70-zram-swap.deps
           grep -q '^SCX_SCHEDULER=scx_lavd' /tmp/rootfs/etc/kinini/scx.conf
-          grep -q 'sys/fs/bpf' /tmp/rootfs/etc/niinit/1
-          grep -q 'crypttab' /tmp/rootfs/etc/niinit/1
+          grep -q 'niinit-parallel' /tmp/rootfs/etc/niinit/1
+          grep -q 'sys/fs/bpf' /tmp/rootfs/etc/niinit/1.d/40-bpffs
+          grep -q 'crypttab' /tmp/rootfs/etc/niinit/1.d/60-crypttab
+          grep -q 'kinini-scx' /tmp/rootfs/etc/kinini/scx.conf
 
   iso:
     name: iso build

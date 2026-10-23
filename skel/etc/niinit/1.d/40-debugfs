@@ -1,0 +1,6 @@
+#!/bin/sh
+# debugfs: scx schedulers read cpu frequency/idle stats there; without
+# it scx_lavd & co. abort with "No debugfs mount found"
+mkdir -p /sys/kernel/debug
+mountpoint -q /sys/kernel/debug \
+        || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true

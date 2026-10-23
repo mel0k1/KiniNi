@@ -1,0 +1,3 @@
+#!/bin/sh
+# compressed RAM swap (CachyOS-style), see /etc/kinini/zram.conf
+[ -x /usr/bin/zram-swap ] && /usr/bin/zram-swap start 2>/dev/null || true

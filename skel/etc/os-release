@@ -1,6 +1,6 @@
 NAME="KiniNi Linux"
 ID=kinini
-VERSION_ID="0.4"
-PRETTY_NAME="KiniNi Linux 0.4"
+VERSION_ID="0.5"
+PRETTY_NAME="KiniNi Linux 0.5"
 ANSI_COLOR="1;33"
 HOME_URL="https://github.com/mel0k1/KiniNi"

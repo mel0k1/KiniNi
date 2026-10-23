@@ -1,0 +1,6 @@
+#!/bin/sh
+# replay uevents for devices that already exist, so udev rules (IO
+# scheduler selection etc.) and driver autoloading apply at boot.
+# udevd itself is started by /etc/niinit/1 before this parallel block.
+[ -x /usr/bin/udevadm ] && udevadm trigger --type=devices --action=add \
+        >/dev/null 2>&1 || true

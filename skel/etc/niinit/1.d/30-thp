@@ -1,0 +1,5 @@
+#!/bin/sh
+# transparent hugepage defrag (CachyOS usr/lib/tmpfiles.d/thp.conf)
+[ -w /sys/kernel/mm/transparent_hugepage/defrag ] && \
+        echo defer+madvise > /sys/kernel/mm/transparent_hugepage/defrag \
+        2>/dev/null || true

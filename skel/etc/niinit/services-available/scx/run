@@ -1,7 +1,9 @@
 #!/bin/sh
 # sched_ext BPF CPU scheduler service (CachyOS-style), disabled by default.
-# enable:   svctl enable scx && svctl start scx
+# enable:   svctl enable scx && svctl start scx   (or: kinini-scx on)
 # config:   /etc/kinini/scx.conf  (SCX_SCHEDULER, SCX_FLAGS)
+# switch:   kinini-scx use scx_bpfland --now   (no reboot needed)
+# status:   kinini-scx status / list / top
 # sched:    kipki install scx     (schedulers: scx_lavd, scx_bpfland, ...)
 #
 # runs the scheduler in the foreground under the niinit supervisor,

@@ -1,0 +1,43 @@
+#!/bin/sh
+# encrypted swap from /etc/crypttab (4th field "swap"): ephemeral
+# plain dm-crypt with a random key, fresh swap on every boot. the
+# root LUKS volume is unlocked earlier, in the initramfs, and its
+# crypttab entry is skipped here (options do not contain "swap").
+[ -f /etc/crypttab ] && [ -x /usr/bin/cryptsetup ] || exit 0
+# udev populates /dev/disk/by-partuuid asynchronously (20-udev-trigger
+# ran first, see .deps); give the queue a bounded moment
+[ -x /usr/bin/udevadm ] && udevadm settle --timeout=10 >/dev/null 2>&1 \
+        || true
+while read -r dst src key opts; do
+        [ -n "$dst" ] || continue
+        case "$dst" in '#'*) continue ;; esac
+        case " $opts " in
+        *" swap "*)
+                case "$src" in
+                PARTUUID=*) src="/dev/disk/by-partuuid/${src#PARTUUID=}" ;;
+                esac
+                n=0
+                while [ ! -e "$src" ] && [ "$n" -lt 10 ]; do
+                        sleep 1
+                        n=$(( n + 1 ))
+                        [ -x /usr/bin/udevadm ] && udevadm settle \
+                                --timeout=2 >/dev/null 2>&1 || true
+                done
+                [ -e "$src" ] || {
+                        echo "niinit: crypttab: $src not found" >&2
+                        continue
+                }
+                # no --size: it is in 512-byte sectors (the old
+                # "--size 256" made a 128 KiB swap); with no --size the
+                # mapped device covers the partition
+                cryptsetup open --type plain --key-file="$key" \
+                        --cipher aes-xts-plain64 "$src" "$dst" \
+                        2>/dev/null || {
+                        echo "niinit: crypttab: cannot open $src" >&2
+                        continue
+                }
+                mkswap "/dev/mapper/$dst" >/dev/null 2>&1 || true
+                swapon "/dev/mapper/$dst" 2>/dev/null || true
+                ;;
+        esac
+done < /etc/crypttab
