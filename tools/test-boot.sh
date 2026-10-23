@@ -84,8 +84,8 @@ LOG=$TMP/serial.log
 
 fail() {
         echo "test-boot: FAIL: $*" >&2
-        echo "----- last 70 lines of the console log -----" >&2
-        tail -70 "$LOG" >&2 || true
+        echo "----- last 120 lines of the console log -----" >&2
+        tail -120 "$LOG" >&2 || true
         exit 1
 }
 
