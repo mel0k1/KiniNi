@@ -351,13 +351,28 @@ verify)
                 done
                 echo "test-boot: [$FW] locale generation verified"
                 send 'grep -qs "mapper/swap" /proc/swaps && echo "SWAPENC""_OK"'
-                wait_for "SWAPENC_OK" "waiting for the encrypted swap check"
+                n=0
+                while ! grep -qs "SWAPENC_OK" "$LOG"; do
+                        if [ "$n" -ge 120 ]; then
+                                # shellcheck disable=SC2016
+                                send 'echo "=== SWAP DIAG ==="; cat /etc/crypttab; echo "-- by-partuuid:"; ls /dev/disk/by-partuuid/ 2>&1; echo "-- swaps:"; cat /proc/swaps; echo "-- manual open:"; cryptsetup open --type plain --key-file=/dev/urandom --cipher aes-xts-plain64 /dev/vda2 swapdiag 2>&1 | head -3; cryptsetup close swapdiag 2>/dev/null; echo "-- scx log:"; tail -6 /var/log/scx.log 2>/dev/null; echo "-- sched_ext dmesg:"; dmesg | grep -i sched_ext | tail -3; echo "=== SWAPDIAG""_DONE ==="'
+                                sleep 6
+                                fail "encrypted swap did not come up (diag above)"
+                        fi
+                        if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
+                                fail "qemu exited early (waiting for: SWAPENC_OK)"
+                        fi
+                        sleep 2
+                        n=$(( n + 2 ))
+                done
+                echo "test-boot: [$FW] encrypted swap verified"
                 # shellcheck disable=SC2016
                 send 'dmesg | grep -q "sched_ext.*enabled" && echo "SCX""_OK"'
                 n=0
                 while ! grep -qs "SCX_OK" "$LOG"; do
                         if [ "$n" -ge 300 ]; then
-                                send 'echo "=== SCX DIAG ==="; tail -8 /var/log/scx.log 2>/dev/null; dmesg | grep -i sched_ext | tail -3'
+                                # shellcheck disable=SC2016
+                                send 'echo "=== SCX DIAG ==="; tail -12 /var/log/scx.log 2>/dev/null; echo "-- dmesg:"; dmesg | grep -i -e sched_ext -e bpf | tail -8; echo "=== SCXDIAG""_DONE ==="'
                                 sleep 4
                                 fail "scx scheduler did not attach (diag above)"
                         fi
