@@ -6,6 +6,8 @@
 #
 # runs the scheduler in the foreground under the niinit supervisor,
 # exactly like CachyOS' scx_loader would, minus the D-Bus dependency.
+# output goes to /var/log/scx.log: schedulers are chatty at startup and
+# a crash-looping one must not flood the console.
 # shellcheck disable=SC1090,SC1091
 [ -f /etc/kinini/scx.conf ] && . /etc/kinini/scx.conf
 [ -x /usr/bin/modprobe ] && modprobe -q sched_ext 2>/dev/null
@@ -15,7 +17,6 @@ SCX=${SCX_SCHEDULER:-scx_lavd}
         echo "scx: scheduler '$SCX' not found (kipki install scx)" >&2
         exit 1
 }
-exec 2>&1
 echo "scx: loading sched_ext scheduler $SCX ${SCX_FLAGS}"
 # shellcheck disable=SC2086
-exec "$SCX" ${SCX_FLAGS}
+exec "$SCX" ${SCX_FLAGS} >> /var/log/scx.log 2>&1

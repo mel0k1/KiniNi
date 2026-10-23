@@ -341,8 +341,22 @@ verify)
                 echo "test-boot: [$FW] locale generation verified"
                 send 'grep -qs "mapper/swap" /proc/swaps && echo "SWAPENC""_OK"'
                 wait_for "SWAPENC_OK" "waiting for the encrypted swap check"
-                send 'dmesg | grep -q "sched_ext.*enabled" && echo "SCX""_OK" || { dmesg | grep -i sched_ext | tail -3; false; }'
-                wait_for "SCX_OK" "waiting for the sched_ext scheduler check"
+                # shellcheck disable=SC2016
+                send 'dmesg | grep -q "sched_ext.*enabled" && echo "SCX""_OK"'
+                n=0
+                while ! grep -qs "SCX_OK" "$LOG"; do
+                        if [ "$n" -ge 300 ]; then
+                                send 'echo "=== SCX DIAG ==="; tail -8 /var/log/scx.log 2>/dev/null; dmesg | grep -i sched_ext | tail -3'
+                                sleep 4
+                                fail "scx scheduler did not attach (diag above)"
+                        fi
+                        if [ -n "$QPID" ] && ! kill -0 "$QPID" 2>/dev/null; then
+                                fail "qemu exited early (waiting for: SCX_OK)"
+                        fi
+                        sleep 2
+                        n=$(( n + 2 ))
+                done
+                echo "test-boot: [$FW] scx scheduler attached"
                 send 'grep -qs up /etc/niinit/services/scx/stat && echo "SCXUP""_OK"'
                 wait_for "SCXUP_OK" "waiting for the scx service state check"
                 echo "test-boot: [$FW] LUKS + timezone + locale + scx verified"
