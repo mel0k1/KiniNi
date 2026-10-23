@@ -23,12 +23,15 @@ SIZE=auto
 ALGO=zstd
 PRIORITY=100
 SWAPPINESS=150
+# shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
 
 case "$1" in
 stop)
         swapoff "$ZRAM" 2>/dev/null || true
-        [ -w "$SYS/reset" ] && echo 1 > "$SYS/reset" 2>/dev/null || true
+        if [ -w "$SYS/reset" ]; then
+                echo 1 > "$SYS/reset" 2>/dev/null || true
+        fi
         exit 0
         ;;
 start)
@@ -55,8 +58,9 @@ if [ "$SIZE" = auto ] || [ -z "$SIZE" ]; then
         [ "$SIZE" -gt 32768 ] && SIZE=32768
 fi
 
-[ -n "$ALGO" ] && [ -w "$SYS/comp_algorithm" ] && \
+if [ -n "$ALGO" ] && [ -w "$SYS/comp_algorithm" ]; then
         echo "$ALGO" > "$SYS/comp_algorithm" 2>/dev/null || true
+fi
 
 if ! echo $(( SIZE * 1024 * 1024 )) > "$SYS/disksize" 2>/dev/null; then
         echo "zram-swap: cannot set disksize ($SIZE MiB)" >&2
@@ -72,8 +76,9 @@ mkswap "$ZRAM" >/dev/null 2>&1 || {
 # pages would first be hashed/zswap-compressed and then zram-compressed
 # anyway, wasting CPU (CachyOS 30-zram.rules).
 sysctl -q -w "vm.swappiness=$SWAPPINESS" >/dev/null 2>&1 || true
-[ -w /sys/module/zswap/parameters/enabled ] && \
+if [ -w /sys/module/zswap/parameters/enabled ]; then
         echo N > /sys/module/zswap/parameters/enabled 2>/dev/null || true
+fi
 
 swapon -p "$PRIORITY" "$ZRAM" 2>/dev/null || {
         echo "zram-swap: swapon failed" >&2
