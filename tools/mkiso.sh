@@ -552,7 +552,7 @@ if [ -f "$CRYPTBIN" ] && [ -f "$ROOT/usr/lib/ld-linux-x86-64.so.2" ]; then
                 cp -L "$path" "$DINITRD/usr/lib/$soname"
         done
         echo "mkiso: closure copied: $(find "$DINITRD/usr/lib" -type f | wc -l) files"
-        echo "mkiso: closure names: $(ls "$DINITRD/usr/lib" | tr '\n' ' ')"
+        echo "mkiso: closure names: $(find "$DINITRD/usr/lib" -mindepth 1 -maxdepth 1 -printf '%f ')"
         # void binaries carry PT_INTERP=/lib64/ld-linux-x86-64.so.2 and
         # the loader's compiled-in system search path is /usr/lib64 only
         # (not /usr/lib!) - the rootfs bridges that with symlinks, the

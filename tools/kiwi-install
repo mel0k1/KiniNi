@@ -136,10 +136,23 @@ if [ "$LUKS" = 1 ]; then
         fi
 fi
 if [ -n "$LOCALE" ]; then
+        # strip every UTF-8 suffix and re-add exactly one: the old
+        # ".utf8 -> .UTF-8" rewrite appended a second suffix to an
+        # already-suffixed name ("ru_RU.UTF-8" became
+        # "ru_RU.UTF-8.UTF-8"), which then rewrote the libc-locales
+        # entry into a form the glibc-locales trigger ignores
+        while :; do
+                case "$LOCALE" in
+                *.UTF-8)        LOCALE=${LOCALE%.UTF-8} ;;
+                *.utf8)         LOCALE=${LOCALE%.utf8} ;;
+                *)              break ;;
+                esac
+        done
         case "$LOCALE" in
-        *.UTF-8|*.utf8) LOCALE=${LOCALE%.utf8}.UTF-8 ;;
-        *)              die "locale must be a UTF-8 name, e.g. en_US.UTF-8" ;;
+        ""|*.*|*[!A-Za-z0-9_@]*) \
+                        die "locale must be a language name like ru_RU or ru_RU.UTF-8" ;;
         esac
+        LOCALE="$LOCALE.UTF-8"
 fi
 if [ -n "$ZONE" ] && [ ! -f "/usr/share/zoneinfo/$ZONE" ]; then
         die "unknown timezone: $ZONE (see /usr/share/zoneinfo)"
@@ -242,9 +255,19 @@ es_ES.UTF-8 it_IT.UTF-8 pl_PL.UTF-8 uk_UA.UTF-8"
                 *)              LOCALE=$(echo "$LOCS" | tr -s ' \n' '\n' \
                                         | sed -n "${ans}p") ;;
                 esac
+                # strip every UTF-8 suffix, re-add exactly one (see the
+                # -l validation above); typing "de_DE" is fine too
+                while :; do
+                        case "$LOCALE" in
+                        *.UTF-8)        LOCALE=${LOCALE%.UTF-8} ;;
+                        *.utf8)         LOCALE=${LOCALE%.utf8} ;;
+                        *)              break ;;
+                        esac
+                done
                 case "$LOCALE" in
-                *.UTF-8|*.utf8) LOCALE=${LOCALE%.utf8}.UTF-8; return ;;
-                *)              echo "  invalid locale: $LOCALE" ;;
+                ""|*.*|*[!A-Za-z0-9_@]*) \
+                                echo "  invalid locale: $ans" ;;
+                *)              LOCALE="$LOCALE.UTF-8"; return ;;
                 esac
         done
 }
@@ -533,9 +556,22 @@ if [ -n "$LOCALE" ]; then
         msg "setting locale: $LOCALE"
         printf 'LANG=%s\n' "$LOCALE" > "$TARGET/etc/locale.conf"
         if [ -f "$TARGET/etc/default/libc-locales" ]; then
-                # uncomment the matching line so glibc-locales generates it
-                sed -i "s|^#${LOCALE} |${LOCALE} |" \
+                # uncomment the matching line so glibc-locales generates
+                # it. dots are escaped: the value must match the file
+                # literally, not as a regex (a plain "ru_RU.UTF-8.UTF-8"
+                # pattern would also eat the "ru_RU.UTF-8 UTF-8" line and
+                # rewrite it into a form the glibc-locales trigger then
+                # prints "Ignoring wrong locale" for)
+                LOCRE=$(printf '%s' "$LOCALE" | sed 's/[.]/[.]/g')
+                sed -i "s|^#${LOCRE} |${LOCALE} |" \
                         "$TARGET/etc/default/libc-locales"
+                # belt and suspenders: the trigger needs "locale charset",
+                # so append the entry if the uncomment above missed
+                # (different file layout, older/newer glibc-locales, ...)
+                grep -q "^${LOCALE} " \
+                        "$TARGET/etc/default/libc-locales" || \
+                        printf '%s UTF-8\n' "$LOCALE" \
+                                >> "$TARGET/etc/default/libc-locales"
                 msg "generating locale data (glibc-locales)"
                 # xbps-reconfigure / locale-gen run the glibc-locales
                 # scripts which need /proc, /dev (at least /dev/null)

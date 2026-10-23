@@ -145,8 +145,19 @@ start_qemu() {
         exec 3>"$TMP/in"
 }
 
+# type the line in small chunks: qemu's 16550 fifo has been observed to
+# re-deliver a chunk under tcg when a whole long line is written at once
+# (deterministically duplicating e.g. "-l ru_RU.UTF-8" into
+# "-l ru_RU.UTF-8.UTF-8"); pacing the input keeps the fifo from
+# overfilling and the tty typeahead buffer absorbs the rest
 send() {
-        printf '%s\n' "$1" >&3
+        s=$1
+        while [ "${#s}" -gt 32 ]; do
+                printf '%s' "${s%"${s#????????????????????????????????}"}" >&3
+                sleep 0.05
+                s=${s#????????????????????????????????}
+        done
+        printf '%s\n' "$s" >&3
 }
 
 wait_for() {
@@ -321,14 +332,14 @@ verify)
                 send 'readlink /etc/localtime | grep -q Europe/Moscow && echo "TZ""_OK"'
                 wait_for "TZ_OK" "waiting for the timezone check"
                 # shellcheck disable=SC2016
-                send 'echo "LANG=$LANG" | grep -q ru_RU.UTF-8 && echo "LOC""_OK"'
+                send 'grep -qx "LANG=ru_RU.UTF-8" /etc/locale.conf && [ "$LANG" = ru_RU.UTF-8 ] && echo "LOC""_OK"'
                 wait_for "LOC_OK" "waiting for the locale check"
                 # shellcheck disable=SC2016
                 send 'locale -a 2>/dev/null | grep -qi ru_RU && echo "LOCGEN""_OK"'
                 n=0
                 while ! grep -qs "LOCGEN_OK" "$LOG"; do
                         if [ "$n" -ge 720 ]; then
-                                send 'echo "=== LOCGEN DIAG ==="; tail -8 /var/log/locale-gen.log 2>/dev/null; locale -a 2>/dev/null | head -5'
+                                send 'echo "=== LOCGEN DIAG ==="; tail -8 /var/log/locale-gen.log 2>/dev/null; grep -v "^#" /etc/default/libc-locales | grep . | head -3; locale -a 2>/dev/null | head -5'
                                 sleep 4
                                 fail "ru_RU locale not generated (diag above)"
                         fi
