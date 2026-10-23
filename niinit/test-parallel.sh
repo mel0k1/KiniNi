@@ -27,8 +27,9 @@ chmod +x "$T/d/10-a" "$T/d/20-b" "$T/d/30-c"
 t0=$(date +%s)
 out=$("$BIN/niinit-parallel" "$T/d") || fail "1: expected rc=0: $out"
 t1=$(date +%s)
-[ -f "$T/a.end" ] && [ -f "$T/b.start" ] && [ -f "$T/c.start" ] \
-        || fail "1: not all tasks ran"
+for f in a.end b.start c.start; do
+        [ -f "$T/$f" ] || fail "1: $f missing - not all tasks ran"
+done
 [ "$(epochof "$T/b.start")" -ge "$(epochof "$T/a.end")" ] \
         || fail "1: b started before its dependency a finished"
 [ "$(epochof "$T/c.start")" -le "$((t0 + 1))" ] \

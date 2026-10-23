@@ -7,11 +7,13 @@ export PATH="$BIN:$PATH"      # niinit-svdir spawns niinit-sv via PATH
 T=$(mktemp -d /tmp/ndtest.XXXXXX)
 SVDIR=$T/services
 AVAIL=$T/available
-export NIINIT_SVDIR=$SVDIR NIINIT_SVAVAIL=$AVAIL
+export NIINIT_SVDIR="$SVDIR" NIINIT_SVAVAIL="$AVAIL"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
-        [ -n "${DIRPID:-}" ] && kill "$DIRPID" 2>/dev/null || true
+        if [ -n "${DIRPID:-}" ]; then
+                kill "$DIRPID" 2>/dev/null || true
+        fi
         rm -rf "$T"
 }
 trap cleanup EXIT

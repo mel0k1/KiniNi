@@ -43,6 +43,7 @@ ln -sf niinit "$TARGET"/sbin/init
 install -Dm755 "$SRC"/niinit/bin/niinit-sv "$TARGET"/sbin/niinit-sv
 install -Dm755 "$SRC"/niinit/bin/niinit-svdir "$TARGET"/sbin/niinit-svdir
 install -Dm755 "$SRC"/niinit/bin/svctl "$TARGET"/usr/bin/svctl
+install -Dm755 "$SRC"/niinit/bin/niinit-parallel "$TARGET"/usr/bin/niinit-parallel
 ln -sf svctl "$TARGET"/usr/bin/reboot
 ln -sf svctl "$TARGET"/usr/bin/poweroff
 ln -sf svctl "$TARGET"/usr/bin/halt

@@ -4,7 +4,7 @@ set -e
 BIN=$(cd "$(dirname "$0")" && pwd)/bin
 T=$(mktemp -d /tmp/nvtest.XXXXXX)
 trap 'kill $SVPID 2>/dev/null || true; rm -rf $T' EXIT
-export NIINIT_SVDIR=$T
+export NIINIT_SVDIR="$T"
 SVC=$T/svc
 mkdir -p "$SVC"
 
