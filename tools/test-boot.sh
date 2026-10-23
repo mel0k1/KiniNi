@@ -376,7 +376,7 @@ verify)
                 while ! grep -qs "SCX_OK" "$LOG"; do
                         if [ "$n" -ge 300 ]; then
                                 # shellcheck disable=SC2016
-                                send 'echo "=== SCX DIAG ==="; tail -12 /var/log/scx.log 2>/dev/null; echo "-- dmesg:"; dmesg | grep -i -e sched_ext -e bpf | tail -8; echo "=== SCXDIAG""_DONE ==="'
+                                send 'echo "=== SCX DIAG ==="; tail -60 /var/log/scx.log 2>/dev/null; echo "-- btf:"; ls -la /sys/kernel/btf/vmlinux 2>&1; grep -ac sched_ext_ops /sys/kernel/btf/vmlinux 2>/dev/null; echo "-- dmesg:"; dmesg | grep -i -e sched_ext -e bpf | tail -8; echo "=== SCXDIAG""_DONE ==="'
                                 sleep 4
                                 fail "scx scheduler did not attach (diag above)"
                         fi
