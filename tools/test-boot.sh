@@ -137,12 +137,14 @@ mkfifo "$TMP/in"
 
 start_qemu() {
         # start_qemu <extra args...>
-        # pin the NIC explicitly: both kernels support e1000 (module in
-        # the Void kernel, builtin in the KiniNi kernel) and the user
-        # backend provides the SLIRP DHCP server the tests rely on
+        # pin the NIC explicitly: e1000e is builtin in the current Void
+        # kernels (6.12.116+) and in the KiniNi kernel - the plain e1000
+        # driver stopped being resolvable by modprobe on the live iso
+        # (modules.dep shipped without it) - and the user backend
+        # provides the SLIRP DHCP server the tests rely on
         # shellcheck disable=SC2086
         "$QEMU" -m 1024 -smp 2 -accel tcg -display none -monitor none \
-                -serial stdio -no-reboot -nic user,model=e1000 $FIRMARGS "$@" \
+                -serial stdio -no-reboot -nic user,model=e1000e $FIRMARGS "$@" \
                 < "$TMP/in" >> "$LOG" 2>&1 &
         QPID=$!
         # hold the fifo open for this session; typed input is buffered by
@@ -352,7 +354,7 @@ check_desktop_install() {
 # and the harness fails immediately after seeing its END marker.
 dhcp_check() {
         # shellcheck disable=SC2016  # the whole command runs in the guest
-        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 14 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr | head -6; ip link | head -4; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; echo "stat=[$(cat /etc/niinit/services/dhcpcd/stat 2>/dev/null)]"; ls -la /etc/niinit/services/dhcpcd/ 2>&1 | head -8; head -c 120 /etc/niinit/services/dhcpcd/run | od -c | head -4; echo "-- modprobe e1000:"; modprobe -v e1000; echo "modprobe_rc=$?"; echo "-- dmesg:"; dmesg | grep -iE "e1000|net eth|virtio_net" | tail -8; echo "-- udev:"; ls /run/udev 2>&1 | head -3; ls /run/udev/data 2>/dev/null | head -6; udevadm settle --timeout=3 2>&1; ls /sys/class/net; (timeout 5 /etc/niinit/services/dhcpcd/run >/tmp/runout 2>&1); echo "run_rc=$?"; head -10 /tmp/runout; timeout 8 dhcpcd -B -M -d 2>&1 | head -14; ip -4 addr | grep -q 10.0.2. && echo "DHCP""_OK"; echo "DHCPD_DEBUG_DONE"; echo "=== END ""DIAG ==="; fi'
+        send 'n=0; until ip -4 addr | grep -q 10.0.2.; do n=$((n+1)); [ "$n" -gt 14 ] && break; sleep 2; done; if ip -4 addr | grep -q 10.0.2.; then echo "DHCP""_OK"; else echo "=== DHCP DIAG ==="; ip -4 addr | head -6; ip link | head -4; ls /sys/class/net; ps | grep -v grep | grep -i dhcp; echo "stat=[$(cat /etc/niinit/services/dhcpcd/stat 2>/dev/null)]"; ls -la /etc/niinit/services/dhcpcd/ 2>&1 | head -8; head -c 120 /etc/niinit/services/dhcpcd/run | od -c | head -4; echo "-- modprobe e1000:"; modprobe -v e1000; echo "modprobe_rc=$?"; echo "-- dmesg:"; dmesg | grep -iE "e1000|net eth|virtio_net" | tail -8; echo "-- dep:"; grep -c e1000 /lib/modules/6.12.116_1/modules.dep 2>&1; ls /lib/modules/6.12.116_1/kernel/drivers/net/ethernet/intel/e1000 2>&1 | head -3; echo "-- udev:"; ls /run/udev 2>&1 | head -3; ls /run/udev/data 2>/dev/null | head -6; udevadm settle --timeout=3 2>&1; ls /sys/class/net; (timeout 5 /etc/niinit/services/dhcpcd/run >/tmp/runout 2>&1); echo "run_rc=$?"; head -10 /tmp/runout; timeout 8 dhcpcd -B -M -d 2>&1 | head -14; ip -4 addr | grep -q 10.0.2. && echo "DHCP""_OK"; echo "DHCPD_DEBUG_DONE"; echo "=== END ""DIAG ==="; fi'
         n=0
         while [ "$n" -lt 90 ]; do
                 grep -qs "DHCP_OK" "$LOG" && {
