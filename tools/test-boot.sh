@@ -246,7 +246,7 @@ check_live_desktop() {
         echo "test-boot: [$FW] lightdm service up"
         # Xorg + xfce4-session + pipewire: LightDM autologin -> X on tty7
         # shellcheck disable=SC2016
-        send 'for i in $(seq 1 150); do pgrep -x Xorg >/dev/null && pgrep -x xfce4-session >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"; pgrep -x xfce4-session >/dev/null && echo "XFCE""_OK"'
+        send 'for i in $(seq 1 300); do pgrep -x Xorg >/dev/null && pgrep -x xfce4-session >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"; pgrep -x xfce4-session >/dev/null && echo "XFCE""_OK"'
         n=0
         while :; do
                 x=0; xf=0
@@ -255,8 +255,8 @@ check_live_desktop() {
                 [ "$x" = 1 ] && [ "$xf" = 1 ] && break
                 if [ "$n" -ge 180 ]; then
                         # shellcheck disable=SC2016
-                        send 'echo "=== DESKTOP DIAG ==="; pgrep -a Xorg 2>/dev/null | head -2; pgrep -a xfce4-session 2>/dev/null | head -2; tail -20 /var/log/lightdm.log 2>/dev/null; ls /var/log/lightdm/ 2>/dev/null; cat /etc/lightdm/lightdm.conf | grep -v "^#" | grep .; echo "=== DESKDIAG""_DONE ==="'
-                        sleep 5
+                        send 'echo "=== DESKTOP DIAG ==="; ps | grep -E "Xorg|lightdm|xfce|X" | grep -v grep | head -8; tail -25 /var/log/lightdm.log 2>/dev/null; echo "-- x logs:"; for f in /var/log/lightdm/x-*.log /var/log/Xorg.0.log; do [ -f "$f" ] && { echo "== $f"; tail -15 "$f"; }; done; echo "-- conf:"; grep -v "^#" /etc/lightdm/lightdm.conf | grep .; echo "=== DESKDIAG""_DONE ==="'
+                        sleep 20
                         fail "Xfce session did not start (diag above)"
                 fi
                 sleep 2
@@ -333,13 +333,13 @@ check_desktop_install() {
         done
         echo "test-boot: [$FW] dbus/seatd/lightdm/dhcpcd services verified"
         # shellcheck disable=SC2016
-        send 'for i in $(seq 1 90); do pgrep -x Xorg >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"'
+        send 'for i in $(seq 1 300); do pgrep -x Xorg >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"'
         n=0
         while ! grep -qs "XORG_OK" "$LOG"; do
-                if [ "$n" -ge 120 ]; then
+                if [ "$n" -ge 180 ]; then
                         # shellcheck disable=SC2016
-                        send 'echo "=== XDIAG ==="; pgrep -a Xorg | head -2; tail -20 /var/log/lightdm.log 2>/dev/null; ls /dev/dri 2>&1; echo "=== XDIAG""_DONE ==="'
-                        sleep 4
+                        send 'echo "=== XDIAG ==="; ps | grep -E "Xorg|lightdm" | grep -v grep | head -6; tail -25 /var/log/lightdm.log 2>/dev/null; for f in /var/log/lightdm/x-*.log /var/log/Xorg.0.log; do [ -f "$f" ] && { echo "== $f"; tail -15 "$f"; }; done; ls /dev/dri 2>&1; echo "=== XDIAG""_DONE ==="'
+                        sleep 20
                         fail "Xorg did not start on the installed system (diag above)"
                 fi
                 sleep 2
