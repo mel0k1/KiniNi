@@ -238,7 +238,7 @@ jobs:
             https://repo-default.voidlinux.org/current base-system linux6.12 \
             fastfetch syslinux dhcpcd dosfstools hdparm procps-ng \
             cryptsetup tzdata glibc-locales scx \
-            sudo opendoas dbus lightdm lightdm-gtk-greeter seatd \
+            sudo opendoas dbus dbus-x11 lightdm lightdm-gtk-greeter seatd \
             xfce4 xfce4-pulseaudio-plugin pavucontrol \
             labwc foot fuzzel \
             mesa xorg-server xf86-video-fbdev \
