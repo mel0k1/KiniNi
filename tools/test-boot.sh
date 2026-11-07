@@ -11,7 +11,7 @@
 #   plain    kiwi-install -D /dev/vda -y -s 256 (live desktop enabled)
 #   luks     LUKS2 root (-d none), Europe/Moscow, ru_RU.UTF-8, scx_lavd
 #   desktop  -d xfce -u kinini -P (password file): user out of the box,
-#            sudo, dbus/seatd/lightdm services, Xfce autologin in live
+#            sudo, dbus/lightdm services, Xfce autologin in live
 #
 # the install/verify phases use a raw disk image (create it with
 # qemu-img). verify checks login, zram swap, tuned swappiness and a
@@ -221,7 +221,7 @@ wait_live_shell() {
 }
 
 check_live_desktop() {
-        # the live desktop: user 'kiwi', dbus/seatd/lightdm services up,
+        # the live desktop: user 'kiwi', dbus/lightdm services up,
         # LightDM autologin brings X and the Xfce session up on tty7 and
         # the XDG autostart starts the PipeWire stack for that session.
         # everything is slow under TCG: bounded poll loops with a diag
@@ -231,12 +231,12 @@ check_live_desktop() {
         send 'test -x /usr/bin/startxfce4 -a -x /usr/bin/labwc -a -x /usr/bin/lightdm && echo "DESKPKGS""_OK"'
         wait_for "DESKPKGS_OK" "waiting for the desktop packages check"
         # shellcheck disable=SC2016
-        send 'for s in dbus seatd lightdm; do grep -qs up /etc/niinit/services/$s/stat || echo "MISS$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
+        send 'for s in dbus lightdm; do grep -qs up /etc/niinit/services/$s/stat || echo "MISS$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
         n=0
         while ! grep -qs "LDM_OK" "$LOG"; do
                 if [ "$n" -ge 120 ]; then
                         # shellcheck disable=SC2016
-                        send 'echo "=== LDM DIAG ==="; for s in dbus seatd lightdm; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; grep -qs MISS lightdm /dev/null; echo "=== LDMDIAG""_DONE ==="'
+                        send 'echo "=== LDM DIAG ==="; for s in dbus lightdm; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; grep -qs MISS lightdm /dev/null; echo "=== LDMDIAG""_DONE ==="'
                         sleep 4
                         fail "lightdm service not up (diag above)"
                 fi
@@ -255,7 +255,7 @@ check_live_desktop() {
                 [ "$x" = 1 ] && [ "$xf" = 1 ] && break
                 if [ "$n" -ge 500 ]; then
                         # shellcheck disable=SC2016
-                        send 'echo "=== DESKTOP DIAG ==="; ps | grep -E "Xorg|lightdm|xfce" | grep -v grep | head -8; echo "-- dbus-launch:"; command -v dbus-launch; echo "-- xsessions:"; ls /usr/share/xsessions 2>&1; echo "-- mem:"; free | head -2; echo "-- dri:"; ls /dev/dri 2>&1; echo "-- lightdm.log (outer):"; tail -25 /var/log/lightdm.log 2>/dev/null; echo "-- lightdm.log (inner):"; tail -40 /var/log/lightdm/lightdm.log 2>/dev/null; echo "-- x logs:"; for f in /var/log/lightdm/x-*.log /var/log/Xorg.0.log; do [ -f "$f" ] && { echo "== $f"; tail -20 "$f"; }; done; echo "=== DESKDIAG""_DONE ==="'
+                        send 'echo "=== DESKTOP DIAG ==="; for s in lightdm dbus; do echo "$s: stat=$(cat /etc/niinit/services/$s/stat 2>/dev/null) pid=$(cat /etc/niinit/services/$s/pid 2>/dev/null)"; done; ps | head -30; echo "-- dbus-launch:"; command -v dbus-launch; echo "-- xsessions:"; ls /usr/share/xsessions 2>&1; echo "-- mem:"; free | head -2; echo "-- dri:"; ls /dev/dri 2>&1; echo "-- X11 sockets:"; ls /tmp/.X11-unix 2>&1; echo "-- lightdm.log (outer):"; tail -30 /var/log/lightdm.log 2>/dev/null; echo "-- lightdm.log (inner, tail 90):"; tail -90 /var/log/lightdm/lightdm.log 2>/dev/null; echo "-- x logs:"; for f in /var/log/lightdm/x-*.log /var/log/Xorg.0.log; do [ -f "$f" ] && { echo "== $f"; tail -25 "$f"; }; done; echo "-- dmesg tail:"; dmesg | tail -6; echo "=== DESKDIAG""_DONE ==="'
                         sleep 30
                         fail "Xfce session did not start (diag above)"
                 fi
@@ -319,19 +319,19 @@ check_desktop_install() {
         send 'test -f /etc/lightdm/lightdm.conf && ! grep -q "^autologin-user" /etc/lightdm/lightdm.conf && echo "NOAUTO""_OK"'
         wait_for "NOAUTO_OK" "waiting for the autologin strip check"
         # shellcheck disable=SC2016
-        send 'for s in dbus seatd lightdm dhcpcd; do grep -qs up /etc/niinit/services/$s/stat || echo "DOWN$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
+        send 'for s in dbus lightdm dhcpcd; do grep -qs up /etc/niinit/services/$s/stat || echo "DOWN$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
         n=0
         while ! grep -qs "LDM_OK" "$LOG"; do
                 if [ "$n" -ge 120 ]; then
                         # shellcheck disable=SC2016
-                        send 'echo "=== SVCDIAG ==="; for s in dbus seatd lightdm dhcpcd; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; echo "=== SVCDIAG""_DONE ==="'
+                        send 'echo "=== SVCDIAG ==="; for s in dbus lightdm dhcpcd; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; echo "=== SVCDIAG""_DONE ==="'
                         sleep 4
                         fail "installed desktop services not up (diag above)"
                 fi
                 sleep 2
                 n=$(( n + 2 ))
         done
-        echo "test-boot: [$FW] dbus/seatd/lightdm/dhcpcd services verified"
+        echo "test-boot: [$FW] dbus/lightdm/dhcpcd services verified"
         # shellcheck disable=SC2016
         send 'for i in $(seq 1 240); do pgrep -x Xorg >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"'
         n=0

@@ -717,9 +717,10 @@ fi
 
 case "$DESKTOP" in
 xfce)
-        msg "desktop: Xfce + LightDM graphical login (dbus, seatd, lightdm)"
+        # no seatd here: xfce4 pulls in elogind, which serves the logind
+        # API for LightDM/Xorg; two seat managers would fight over the seat
+        msg "desktop: Xfce + LightDM graphical login (dbus, lightdm)"
         enable_service dbus
-        enable_service seatd
         enable_service lightdm
         ;;
 labwc)

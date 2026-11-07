@@ -192,7 +192,11 @@ if [ -f "$ISOT/rootfs/etc/lightdm/lightdm.conf" ]; then
         sed -i '/^\[Seat:\*\]/a autologin-user=kiwi\nautologin-session=xfce\nautologin-timeout=0' \
                 "$ISOT/rootfs/etc/lightdm/lightdm.conf"
 fi
-for s in dbus lightdm seatd; do
+# seatd stays disabled on the live desktop: xfce4 pulls in elogind (it
+# activates on demand through dbus and provides the logind API LightDM
+# and Xorg use), and running seatd next to it means two daemons fighting
+# for the same seat. labwc users start it by hand (svctl enable seatd).
+for s in dbus lightdm; do
         if [ -d "$ISOT/rootfs/etc/niinit/services-available/$s" ]; then
                 rm -rf "$ISOT/rootfs/etc/niinit/services/$s"
                 cp -a "$ISOT/rootfs/etc/niinit/services-available/$s" \
