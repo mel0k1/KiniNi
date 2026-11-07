@@ -1,0 +1,36 @@
+#!/bin/sh
+# wpa_supplicant: wireless authentication. the service is enabled by the
+# 80-wifi stage-1 task when wireless hardware is present (the live iso)
+# or by kiwi-install (installed system). dhcpcd (master mode) picks the
+# address up as soon as a network connects.
+#
+# config:  /etc/wpa_supplicant/wpa_supplicant.conf
+#          created on first start; ctrl_interface is group 'wheel', so
+#          wpa_cli - and kinini-wifi - work for wheel members without
+#          sudo. networks saved during the live session are carried over
+#          to the installed system by kiwi-install.
+# manage:  kinini-wifi (TUI, wifi-menu style)
+IFACE=
+for d in /sys/class/net/*; do
+        [ -e "$d/wireless" ] || continue
+        IFACE=${d##*/}
+        break
+done
+[ -n "$IFACE" ] || {
+        # no wireless interface (yet): idle retry instead of a crash loop
+        echo "wpa_supplicant: no wireless interface, retrying in 30s"
+        sleep 30
+        exit 0
+}
+CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+if [ ! -f "$CONF" ]; then
+        install -d -m750 -o root -g wheel /etc/wpa_supplicant
+        {
+                echo '# managed by kinini-wifi (wpa_cli save_config appends here)'
+                echo 'ctrl_interface=DIR=/run/wpa_supplicant GROUP=wheel'
+                echo 'update_config=1'
+        } > "$CONF"
+        chmod 640 "$CONF"
+fi
+echo "wpa_supplicant: starting on $IFACE"
+exec wpa_supplicant -c "$CONF" -i "$IFACE" 2>&1

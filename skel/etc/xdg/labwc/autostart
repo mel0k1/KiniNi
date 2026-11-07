@@ -1,0 +1,2 @@
+# KiniNi labwc session extras (executed by labwc as the session user)
+kinini-audio-start &

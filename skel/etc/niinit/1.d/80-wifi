@@ -1,0 +1,22 @@
+#!/bin/sh
+# enable the wpa_supplicant service when wireless hardware is present.
+# runs after the udev trigger task (firmware/driver loading), so wait
+# briefly for the interface to appear before giving up. enabled this way
+# only on machines that actually have wifi - no crash loops on desktops.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+        for d in /sys/class/net/*; do
+                [ -e "$d/wireless" ] || continue
+                [ -d /etc/niinit/services-available/wpa_supplicant ] || exit 0
+                [ -e /etc/niinit/services/wpa_supplicant ] && exit 0
+                # a real directory copy, not a symlink: symlinked service
+                # dirs in the iso9660 lower layer of the live overlay do
+                # not survive the supervisor's spawn (see mkiso.sh)
+                cp -a /etc/niinit/services-available/wpa_supplicant \
+                        /etc/niinit/services/wpa_supplicant
+                echo "wifi: wireless interface ${d##*/} found," \
+                        "wpa_supplicant service enabled"
+                exit 0
+        done
+        sleep 1
+done
+exit 0

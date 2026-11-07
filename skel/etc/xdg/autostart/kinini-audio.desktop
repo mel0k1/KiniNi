@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KiniNi audio (PipeWire)
+Comment=Start the per-user PipeWire stack (pipewire, wireplumber, pipewire-pulse)
+Exec=kinini-audio-start
+Terminal=false
+NoDisplay=true
+Categories=System;

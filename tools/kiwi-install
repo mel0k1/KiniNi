@@ -1,10 +1,26 @@
 #!/bin/sh
 # kiwi-install - install KiniNi from the live system to a disk
 #
-# usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-e] [-p FILE]
+# usage: kiwi-install [-D /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-e] [-p FILE]
+#                     [-d xfce|labwc|none] [-u USER] [-P FILE] [-A sudo|doas]
 #                     [-z ZONE] [-l LOCALE] [-S SCHED] [-N] [-y] [-h]
 #
-#   -d DISK    target disk, e.g. /dev/sda (interactive picker if omitted)
+#   -D DISK    target disk, e.g. /dev/sda (interactive picker if omitted;
+#              since 0.5 the desktop flag is -d, the disk is -D)
+#   -d DESKTOP graphical session to enable on the installed system:
+#                xfce   Xfce 4.20 with the LightDM graphical login
+#                labwc  minimal Wayland session (login on a console,
+#                       then run 'kinini-labwc'; seatd + dbus enabled)
+#                none   console only (the packages stay installed;
+#                       enable a session later with svctl)
+#              default: same desktop as the running live session
+#   -u USER    create this regular user (in wheel/video/audio/input);
+#              asked interactively when omitted (default 'kiwi')
+#   -P FILE    file with USER's login password (first line; for scripted
+#              installs, -u with -y requires it)
+#   -A TOOL    privilege tool for the wheel group: sudo (default), doas
+#              or both (needs the user of -u/-A; live uses sudo+NOPASSWD
+#              for 'kiwi', which the installer removes from the target)
 #   -b MODE    partition layout and bootloader:
 #                bios  msdos label + offline extlinux (syslinux mbr)
 #                uefi  gpt label + 512 MiB ESP with the standalone grub
@@ -33,12 +49,15 @@
 #   -y         no questions: autodetected bootloader mode, default root
 #              password ("kinini"), DHCP on, swap as given, UTC timezone,
 #              en_US.UTF-8 locale, no LUKS (needs -p when combined with
-#              -e), scx_lavd scheduler when available
+#              -e), scx_lavd scheduler when available, live desktop, no
+#              user (pass -u/-P to create one)
 #
 # the installer copies the running live system to a fresh ext4 partition,
-# un-applies live-only tweaks, writes /etc/fstab (and /etc/crypttab for
-# LUKS installs) and installs an offline bootloader shipped inside the
-# ISO. everything runs from the live image, no network is needed.
+# un-applies live-only tweaks (autologin, NOPASSWD sudo, live services),
+# enables the chosen desktop services and the regular user, writes
+# /etc/fstab (and /etc/crypttab for LUKS installs) and installs an
+# offline bootloader shipped inside the ISO. everything runs from the
+# live image, no network is needed.
 # requires: sfdisk, mkfs.ext4, blkid, tar, dd; bios: extlinux + syslinux
 # mbr/ldlinux; uefi: mkfs.vfat + /usr/lib/kinini/BOOTX64.EFI; luks:
 # cryptsetup (in the live image and inside initramfs-disk.img).
@@ -75,12 +94,18 @@ ask() {
 }
 
 usage() {
-        echo "usage: kiwi-install [-d /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-e] [-p FILE]" >&2
+        echo "usage: kiwi-install [-D /dev/sdX] [-b bios|uefi] [-s SWAPMB] [-e] [-p FILE]" >&2
+        echo "                    [-d xfce|labwc|none] [-u USER] [-P FILE] [-A sudo|doas]" >&2
         echo "                    [-z ZONE] [-l LOCALE] [-S SCHED] [-N] [-y] [-h]" >&2
         exit 1
 }
 
 DISK=
+DESKTOP=
+INSTUSER=
+USERPASSFILE=
+USERPASS=
+ADMIN=sudo
 YES=0
 NODHCP=0
 MODE=
@@ -91,15 +116,19 @@ TMPKEY=0
 ZONE=
 LOCALE=
 SCHED=
-while getopts d:b:s:z:l:S:p:eNyh c; do
+while getopts D:d:b:s:z:l:S:p:u:P:A:eNyh c; do
         case $c in
-        d)      DISK=$OPTARG ;;
+        D)      DISK=$OPTARG ;;
+        d)      DESKTOP=$OPTARG ;;
         b)      MODE=$OPTARG ;;
         s)      SWAP=$OPTARG ;;
         z)      ZONE=$OPTARG ;;
         l)      LOCALE=$OPTARG ;;
         S)      SCHED=$OPTARG ;;
         p)      PASSFILE=$OPTARG LUKS=1 ;;
+        u)      INSTUSER=$OPTARG ;;
+        P)      USERPASSFILE=$OPTARG ;;
+        A)      ADMIN=$OPTARG ;;
         e)      LUKS=1 ;;
         N)      NODHCP=1 ;;
         y)      YES=1 ;;
@@ -157,13 +186,52 @@ fi
 if [ -n "$ZONE" ] && [ ! -f "/usr/share/zoneinfo/$ZONE" ]; then
         die "unknown timezone: $ZONE (see /usr/share/zoneinfo)"
 fi
-if [ "$SCHED" = none ]; then
-        :
-elif [ -n "$SCHED" ]; then
+if [ -n "$SCHED" ]; then
         case "$SCHED" in
+        none)   : ;;
         scx*)   [ -x "/usr/bin/$SCHED" ] || die "$SCHED not found (add 'scx' to the live image)" ;;
         *)      die "scheduler must be one of the scx_* binaries or 'none'" ;;
         esac
+fi
+
+# ------------------------------------------------------------ desktop/user
+detect_live_desktop() {
+        # which graphical session does the running live system carry?
+        if [ -x /usr/bin/startxfce4 ]; then
+                echo xfce
+        elif [ -x /usr/bin/labwc ]; then
+                echo labwc
+        else
+                echo none
+        fi
+}
+case "$DESKTOP" in
+"")      ;;
+auto)   DESKTOP=$(detect_live_desktop) ;;
+xfce)   [ -x /usr/bin/startxfce4 ] \
+                || die "xfce is not in the live image (add 'xfce4' to the live iso)" ;;
+labwc)  [ -x /usr/bin/labwc ] \
+                || die "labwc is not in the live image (add 'labwc' to the live iso)" ;;
+none)   ;;
+/dev/*|*[!a-z_]*) die "unknown desktop: '$DESKTOP' (since 0.5 the disk is -D DISK and -d picks the desktop: xfce|labwc|none)" ;;
+*)      die "unknown desktop: $DESKTOP (xfce|labwc|none)" ;;
+esac
+case "$ADMIN" in
+sudo|doas|both|"") ;;
+*)      die "unknown admin tool: $ADMIN (sudo|doas|both)" ;;
+esac
+case "$INSTUSER" in
+"")     ;;
+[a-z_][a-z0-9_-]*) ;;
+*)      die "invalid user name: $INSTUSER" ;;
+esac
+if [ -n "$USERPASSFILE" ]; then
+        [ -f "$USERPASSFILE" ] || die "user password file not found: $USERPASSFILE"
+        IFS= read -r USERPASS < "$USERPASSFILE" || true
+        [ -n "$USERPASS" ] || die "empty user password in $USERPASSFILE"
+fi
+if [ -n "$INSTUSER" ] && [ "$YES" = 1 ] && [ -z "$USERPASS" ]; then
+        die "-u with -y requires -P FILE (no console to ask for a password)"
 fi
 
 if [ "$MODE" = uefi ]; then
@@ -318,6 +386,78 @@ read_luks_passphrase() {
         P1=x P2=x
 }
 
+read_user_password() {
+        printf '  password for %s (hidden): ' "$INSTUSER"
+        stty -echo 2>/dev/null || true
+        read -r P1
+        stty echo 2>/dev/null || true
+        echo
+        printf '  repeat password: '
+        stty -echo 2>/dev/null || true
+        read -r P2
+        stty echo 2>/dev/null || true
+        echo
+        [ -n "$P1" ] || die "empty password"
+        [ "$P1" = "$P2" ] || die "passwords do not match"
+        USERPASS=$P1
+        P1=x P2=x
+}
+
+pick_desktop() {
+        LIVE=$(detect_live_desktop)
+        echo "  graphical session (the same one this live system uses by default):"
+        if [ -x /usr/bin/startxfce4 ]; then
+                printf '    1) xfce  - Xfce 4.20 + LightDM graphical login%s\n' \
+                        "${LIVE:+$([ "$LIVE" = xfce ] && echo ' (as here)')}"
+        fi
+        if [ -x /usr/bin/labwc ]; then
+                printf '    2) labwc - minimal Wayland session (login, run kinini-labwc)%s\n' \
+                        "${LIVE:+$([ "$LIVE" = labwc ] && echo ' (as here)')}"
+        fi
+        echo "    3) none  - console only (packages stay installed)"
+        printf '  desktop [%s]: ' "$LIVE"
+        read -r ans
+        ans=${ans:-1}
+        case "$ans" in
+        *[!0-9]*)       DESKTOP=$ans ;;
+        1)              DESKTOP=xfce ;;
+        2)              DESKTOP=labwc ;;
+        3)              DESKTOP=none ;;
+        *)              DESKTOP=$LIVE ;;
+        esac
+        case "$DESKTOP" in
+        xfce|labwc|none) ;;
+        *)      echo "  unknown desktop '$DESKTOP', using $LIVE"; DESKTOP=$LIVE ;;
+        esac
+}
+
+pick_user() {
+        printf '  create a regular user? [Y/n] '
+        read -r ans
+        case "$ans" in
+        [Nn]*)  INSTUSER=; return ;;
+        esac
+        while :; do
+                printf '  user name [kiwi]: '
+                read -r ans
+                INSTUSER=${ans:-kiwi}
+                case "$INSTUSER" in
+                [a-z_][a-z0-9_-]*) break ;;
+                *)      echo "  invalid user name (lowercase letters, digits, _ -)" ;;
+                esac
+        done
+        read_user_password
+        printf '  privilege tool for %s (1) sudo, 2) doas, 3) both) [1]: ' \
+                "$INSTUSER"
+        read -r ans
+        ans=${ans:-1}
+        case "$ans" in
+        2)      ADMIN=doas ;;
+        3)      ADMIN=both ;;
+        *)      ADMIN=sudo ;;
+        esac
+}
+
 # ---------------------------------------------------------------- disk pick
 if [ -z "$DISK" ]; then
         msg "available disks:"
@@ -371,6 +511,12 @@ if [ "$YES" = 1 ]; then
                         SCHED=none
                 fi
         fi
+        if [ -z "$DESKTOP" ]; then
+                DESKTOP=$(detect_live_desktop)
+        fi
+        # user: only from -u (password via -P, validated above); the
+        # admin tool defaults to sudo
+        [ -n "$ADMIN" ] || ADMIN=sudo
 else
         if [ "$LUKS" = 0 ]; then
                 if ask "encrypt root with LUKS2 (passphrase asked at boot)?" n; then
@@ -387,7 +533,21 @@ else
                         SCHED=none
                 fi
         fi
+        if [ -z "$DESKTOP" ]; then
+                pick_desktop
+        fi
+        if [ -z "$INSTUSER" ]; then
+                pick_user
+        fi
 fi
+
+WIFIHW=0
+for d in /sys/class/net/*; do
+        if [ -e "$d/wireless" ]; then
+                WIFIHW=1
+                break
+        fi
+done
 
 if [ "$YES" = 0 ]; then
         echo
@@ -404,6 +564,8 @@ if [ "$YES" = 0 ]; then
         else
                 echo "  Swap:    none (zram only)"
         fi
+        echo "  Desktop: ${DESKTOP:-none}   User: ${INSTUSER:-none}   Admin: $ADMIN"
+        echo "  Wifi:    $([ "$WIFIHW" = 1 ] && echo wpa_supplicant || echo 'no hardware')"
         echo "  Timezone: ${ZONE:-UTC}   Locale: ${LOCALE:-en_US.UTF-8}"
         echo "  SCX scheduler: ${SCHED:-none}"
         echo
@@ -524,12 +686,63 @@ sed -i '/^for f in \/var\/db\/xbps\/pkgdb-\*\.plist; do$/,/^exit 0$/d' \
 grep -q '^exit 0$' "$TARGET/etc/niinit/1" || echo 'exit 0' \
         >> "$TARGET/etc/niinit/1"
 
+msg "resetting live-only services and privileges"
+# the tar copy brought every enabled live service along (dhcpcd, dbus,
+# lightdm with autologin, seatd): reset them all and re-enable from the
+# installer options below
+for s in dhcpcd dbus lightdm seatd wpa_supplicant scx; do
+        rm -rf "$TARGET/etc/niinit/services/$s"
+done
+# the live user's passwordless sudo never reaches the installed system
+rm -f "$TARGET/etc/sudoers.d/kinini-live" 2>/dev/null || true
+# strip the live autologin block from lightdm.conf
+if [ -f "$TARGET/etc/lightdm/lightdm.conf" ]; then
+        sed -i '/^autologin-/d' "$TARGET/etc/lightdm/lightdm.conf"
+fi
+
 # ---------------------------------------------------------------- services
-if [ "$NODHCP" = 0 ] \
-        && [ -d "$TARGET/etc/niinit/services-available/dhcpcd" ]; then
+enable_service() {
+        _s=$1
+        [ -d "$TARGET/etc/niinit/services-available/$_s" ] || return 0
+        ln -sfn "/etc/niinit/services-available/$_s" \
+                "$TARGET/etc/niinit/services/$_s"
+}
+
+if [ "$NODHCP" = 0 ]; then
         msg "enabling DHCP client service (dhcpcd)"
-        ln -sfn /etc/niinit/services-available/dhcpcd \
-                "$TARGET/etc/niinit/services/dhcpcd"
+        enable_service dhcpcd
+fi
+
+case "$DESKTOP" in
+xfce)
+        msg "desktop: Xfce + LightDM graphical login (dbus, seatd, lightdm)"
+        enable_service dbus
+        enable_service seatd
+        enable_service lightdm
+        ;;
+labwc)
+        msg "desktop: labwc (Wayland) - log in on a console and run 'kinini-labwc'"
+        enable_service dbus
+        enable_service seatd
+        ;;
+none | "")
+        msg "desktop: none (console system; enable later with svctl)"
+        ;;
+esac
+
+# wireless: enable wpa_supplicant when the machine has wifi hardware
+# (kiwi-install runs in the live system, so the hardware is visible) and
+# carry over the networks saved during the live session
+if [ "$WIFIHW" = 1 ] \
+        && [ -d "$TARGET/etc/niinit/services-available/wpa_supplicant" ]; then
+        msg "wireless hardware detected: enabling wpa_supplicant"
+        enable_service wpa_supplicant
+        if [ -s /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+                mkdir -p "$TARGET/etc/wpa_supplicant"
+                cp /etc/wpa_supplicant/wpa_supplicant.conf \
+                        "$TARGET/etc/wpa_supplicant/wpa_supplicant.conf" \
+                        2>/dev/null || true
+        fi
 fi
 
 if [ "${SCHED:-none}" != none ] \
@@ -538,8 +751,7 @@ if [ "${SCHED:-none}" != none ] \
                 msg "enabling sched_ext scheduler service ($SCHED)"
                 printf '# written by kiwi-install\nSCX_SCHEDULER=%s\nSCX_FLAGS=\n' \
                         "$SCHED" > "$TARGET/etc/kinini/scx.conf"
-                ln -sfn /etc/niinit/services-available/scx \
-                        "$TARGET/etc/niinit/services/scx"
+                enable_service scx
         else
                 msg "warning: $SCHED not found in the target, scx service skipped"
         fi
@@ -655,6 +867,54 @@ else
         msg "keeping default root password ($DEFROOTPW) - change it!"
 fi
 
+# ------------------------------------------------------- regular user
+# the out-of-the-box user: in wheel (sudo/doas), video, audio and input,
+# with a real login password - the live 'kiwi' NOPASSWD setup does not
+# survive the installer (removed above)
+if [ -n "$INSTUSER" ]; then
+        msg "creating user: $INSTUSER (wheel, video, audio, input)"
+        # the loop vars expand inside the chroot shell, not here
+        # shellcheck disable=SC2016
+        chroot "$TARGET" sh -c '
+                for g in wheel video audio input; do
+                        grep -q "^$g:" /etc/group || groupadd -r "$g"
+                done
+                id -u "'"$INSTUSER"'" >/dev/null 2>&1 \
+                        || useradd -m -s /bin/bash \
+                                -G wheel,video,audio,input "'"$INSTUSER"'"
+        ' || die "could not create user $INSTUSER"
+        printf '%s:%s\n' "$INSTUSER" "$USERPASS" \
+                | chroot "$TARGET" chpasswd \
+                || die "could not set the password for $INSTUSER"
+        case "$ADMIN" in
+        sudo | both)
+                msg "admin tool: sudo (wheel in /etc/sudoers.d/wheel)"
+                mkdir -p "$TARGET/etc/sudoers.d"
+                printf '%%wheel ALL=(ALL:ALL) ALL\n' \
+                        > "$TARGET/etc/sudoers.d/wheel"
+                chmod 440 "$TARGET/etc/sudoers.d/wheel"
+                if [ -f "$TARGET/etc/sudoers" ] \
+                        && ! grep -q 'includedir /etc/sudoers.d' \
+                                "$TARGET/etc/sudoers"; then
+                        echo '@includedir /etc/sudoers.d' \
+                                >> "$TARGET/etc/sudoers"
+                fi
+                ;;
+        esac
+        case "$ADMIN" in
+        doas | both)
+                msg "admin tool: doas (permit persist :wheel)"
+                touch "$TARGET/etc/doas.conf"
+                grep -q 'permit.*:wheel' "$TARGET/etc/doas.conf" \
+                        || printf 'permit persist :wheel\n' \
+                                >> "$TARGET/etc/doas.conf"
+                chmod 644 "$TARGET/etc/doas.conf"
+                ;;
+        esac
+else
+        msg "no regular user (create one later: useradd -m -G wheel,video,audio,input <name>)"
+fi
+
 # ---------------------------------------------------------------- bootloader
 # the disk kernel is the KiniNi kernel when its version file is present,
 # otherwise the running live kernel (older isos)
@@ -767,6 +1027,11 @@ if [ "$MODE" = uefi ]; then
         msg "ESP: $ESPPART"
 fi
 msg "timezone: ${ZONE:-UTC}, locale: ${LOCALE:-en_US.UTF-8}, scx: ${SCHED:-none}"
+msg "desktop: ${DESKTOP:-none}, user: ${INSTUSER:-none}, admin: $ADMIN," \
+        "wifi: $([ "$WIFIHW" = 1 ] && echo wpa_supplicant || echo 'no hardware')"
+if [ "${DESKTOP:-none}" = labwc ]; then
+        msg "labwc: log in on a console, then run 'kinini-labwc'"
+fi
 msg "reboot and remove the live medium to boot from disk"
 if [ "$LUKS" = 1 ]; then
         msg "the root passphrase will be asked once at every boot"

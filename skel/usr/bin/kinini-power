@@ -1,0 +1,192 @@
+#!/bin/sh
+# kinini-power - TLP-lite power profiles, no daemon and no dependencies
+#
+#   kinini-power status             current profile and hardware state
+#   kinini-power battery            laptop battery profile (+ persist)
+#   kinini-power perf               performance profile (+ persist)
+#   kinini-power apply PROFILE      apply without persisting (boot hook)
+#
+# battery: cpufreq powersave, EPP balance_power, USB autosuspend on,
+#          wifi power saving on, lazy writeback (15 s), scx_lavd
+# perf:    cpufreq performance, EPP performance, USB autosuspend off,
+#          wifi power saving off, snappy writeback (5 s), scx_bpfland
+#
+# 'battery'/'perf' also switch the sched_ext scheduler through
+# kinini-scx (kernel side of the profile); 'apply' is the hardware-only
+# variant used by /etc/niinit/1.d/85-power at boot. the chosen profile
+# is persisted to /etc/kinini/power.conf and re-applied on every boot.
+
+set -u
+
+CONF=${KININI_POWER_CONF:-/etc/kinini/power.conf}
+SYS=${KININI_POWER_SYS:-/sys}
+SYSCTL=${KININI_POWER_SYSCTL:-sysctl}
+IW=${KININI_POWER_IW:-iw}
+SCXTOOL=${KININI_POWER_SCXTOOL:-kinini-scx}
+
+die() {
+        echo "kinini-power: $*" >&2
+        exit 1
+}
+
+usage() {
+        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+        exit "${1:-0}"
+}
+
+# --------------------------------------------------------------- hardware
+set_governor() {
+        # set_governor PREFERRED FALLBACK - first one available wins
+        _g=
+        for want in "$@"; do
+                for d in "$SYS"/devices/system/cpu/cpu*/cpufreq; do
+                        [ -f "$d/scaling_governor" ] || continue
+                        if [ -z "$_g" ] \
+                                && grep -qw "$want" \
+                                        "$d/scaling_available_governors" 2>/dev/null; then
+                                _g=$want
+                        fi
+                done
+                [ -n "$_g" ] && break
+        done
+        [ -n "$_g" ] || return 1
+        for d in "$SYS"/devices/system/cpu/cpu*/cpufreq; do
+                [ -f "$d/scaling_governor" ] || continue
+                echo "$_g" > "$d/scaling_governor" 2>/dev/null || true
+        done
+        echo "cpufreq governor: $_g"
+        return 0
+}
+
+set_epp() {
+        # EPP (energy_performance_preference): intel_pstate / amd-pstate
+        _want=$1
+        _have=0
+        for d in "$SYS"/devices/system/cpu/cpu*/cpufreq; do
+                [ -f "$d/energy_performance_preference" ] || continue
+                grep -qw "$_want" \
+                        "$d/energy_performance_available_preferences" \
+                        2>/dev/null || continue
+                echo "$_want" > "$d/energy_performance_preference" 2>/dev/null \
+                        || true
+                _have=1
+        done
+        [ "$_have" = 1 ] && echo "cpu EPP: $_want"
+        return 0
+}
+
+set_usb_autosuspend() {
+        _v=$1 # auto | on
+        n=0
+        for d in "$SYS"/bus/usb/devices/*/power/control; do
+                [ -f "$d" ] || continue
+                echo "$_v" > "$d" 2>/dev/null || true
+                n=$((n + 1))
+        done
+        [ "$n" -gt 0 ] && echo "usb autosuspend: $_v ($n devices)"
+        return 0
+}
+
+set_wifi_powersave() {
+        _v=$1 # on | off
+        command -v "$IW" >/dev/null 2>&1 || return 0
+        for d in "$SYS"/class/net/*; do
+                [ -e "$d/wireless" ] || continue
+                "$IW" dev "${d##*/}" set power_save "$_v" 2>/dev/null \
+                        && echo "wifi power_save: $_v (${d##*/})"
+        done
+        return 0
+}
+
+set_writeback() {
+        # dirty page writeback interval, centiseconds
+        "$SYSCTL" -q -w "vm.dirty_writeback_centisecs=$1" 2>/dev/null \
+                && echo "vm.dirty_writeback_centisecs: $1"
+        return 0
+}
+
+# ------------------------------------------------------------------ scx
+set_scx() {
+        # hardware-only 'apply' runs before scx.conf matters; the interactive
+        # battery/perf also flip the sched_ext scheduler when possible
+        [ "$1" = apply ] && return 0
+        [ -x "$(command -v "$SCXTOOL" 2>/dev/null)" ] || return 0
+        case "$1" in
+        battery) _sched=scx_lavd ;;
+        perf)    _sched=scx_bpfland ;;
+        *)       return 0 ;;
+        esac
+        if "$SCXTOOL" use "$_sched" --now >/dev/null 2>&1; then
+                echo "scx scheduler: $_sched"
+        fi
+        return 0
+}
+
+# ----------------------------------------------------------------- apply
+apply_profile() {
+        case "$1" in
+        battery)
+                echo "power profile: battery"
+                set_governor powersave schedutil
+                set_epp balance_power
+                set_usb_autosuspend auto
+                set_wifi_powersave on
+                set_writeback 1500
+                set_scx "$1"
+                ;;
+        perf)
+                echo "power profile: perf"
+                set_governor performance schedutil
+                set_epp performance
+                set_usb_autosuspend on
+                set_wifi_powersave off
+                set_writeback 500
+                set_scx "$1"
+                ;;
+        *)      die "unknown profile: $1 (battery|perf)" ;;
+        esac
+}
+
+persist_profile() {
+        mkdir -p "$(dirname "$CONF")"
+        printf '# written by kinini-power (applied at boot by 1.d/85-power)\nKININI_POWER_PROFILE=%s\n' \
+                "$1" > "$CONF"
+        echo "persisted to $CONF"
+}
+
+# ---------------------------------------------------------------- status
+cur_governor() {
+        d="$SYS/devices/system/cpu/cpu0/cpufreq"
+        [ -f "$d/scaling_governor" ] && cat "$d/scaling_governor"
+        return 0
+}
+
+cmd_status() {
+        p=none
+        # shellcheck disable=SC1090
+        [ -r "$CONF" ] && . "$CONF" && p=${KININI_POWER_PROFILE:-none}
+        echo "profile:    $p"
+        echo "governor:   $(cur_governor || echo n/a)"
+        epp=$(cat "$SYS"/devices/system/cpu/cpu0/cpufreq/energy_performance_preference 2>/dev/null)
+        [ -n "$epp" ] && echo "epp:        $epp"
+        scxconf=/etc/kinini/scx.conf
+        [ -r "$scxconf" ] \
+                && echo "scx:        $(sed -n 's/^SCX_SCHEDULER="\{0,1\}\([^"# ]*\)"\{0,1\}.*/\1/p' "$scxconf" | tail -n 1)"
+        wb=$("$SYSCTL" -n vm.dirty_writeback_centisecs 2>/dev/null)
+        [ -n "$wb" ] && echo "writeback:  ${wb}cs"
+        exit 0
+}
+
+[ $# -ge 1 ] || usage 2
+case "$1" in
+status) cmd_status ;;
+battery | perf)
+        apply_profile "$1"
+        persist_profile "$1"
+        ;;
+apply)  [ $# -ge 2 ] || usage 2
+        apply_profile "$2"
+        ;;
+-h)     usage 0 ;;
+*)      usage 2 ;;
+esac

@@ -1,0 +1,48 @@
+#!/bin/sh
+# kinini-audio-start - start the per-user PipeWire stack
+#
+# pipewire (with the pulse replacement socket), wireplumber (session
+# policy) and pipewire-pulse (PulseAudio compatibility) run in the
+# user session - there is no systemd user manager on KiniNi, so the
+# desktop session starts them here:
+#   Xfce:   /etc/xdg/autostart/kinini-audio.desktop (xfce4-session)
+#   labwc:  /etc/xdg/labwc/autostart
+#   tty:    run 'kinini-audio-start' manually after login
+# idempotent: running instances are left alone. sound then works without
+# any configuration (ALSA via alsa-pipewire, Pulse apps via the socket).
+
+set -u
+
+if [ "$(id -u)" = 0 ]; then
+        echo "kinini-audio-start: not for root (audio is per-user)" >&2
+        exit 1
+fi
+
+# pipewire keeps its sockets in XDG_RUNTIME_DIR; login shells get it
+# from profile.d, LightDM sessions from kinini-session - a manual run
+# on a weird console may still miss it
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+        XDG_RUNTIME_DIR="/run/user/$(id -u)"
+        export XDG_RUNTIME_DIR
+fi
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+
+[ -x /usr/bin/pipewire ] || exit 0
+
+pgrep -x pipewire >/dev/null 2>&1 || \
+        pipewire >/dev/null 2>&1 &
+# the wireplumber session manager needs the pipewire core socket first
+n=0
+while [ "$n" -lt 20 ]; do
+        [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && break
+        sleep 0.2
+        n=$((n + 1))
+done
+pgrep -x wireplumber >/dev/null 2>&1 || {
+        [ -x /usr/bin/wireplumber ] && wireplumber >/dev/null 2>&1 &
+}
+pgrep -x pipewire-pulse >/dev/null 2>&1 || {
+        [ -x /usr/bin/pipewire-pulse ] && pipewire-pulse >/dev/null 2>&1 &
+}
+exit 0

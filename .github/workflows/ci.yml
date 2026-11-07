@@ -35,10 +35,20 @@ jobs:
             /src/tools/test-boot.sh /src/tools/kiwi-install \
             /src/tools/mkkernel.sh /src/skel/etc/niinit/1 \
             /src/skel/etc/niinit/services-available/scx/run \
+            /src/skel/etc/niinit/services-available/dbus/run \
+            /src/skel/etc/niinit/services-available/lightdm/run \
+            /src/skel/etc/niinit/services-available/seatd/run \
+            /src/skel/etc/niinit/services-available/wpa_supplicant/run \
             /src/skel/usr/bin/kinini-scx /src/skel/usr/bin/zram-swap \
+            /src/skel/usr/bin/kinini-wifi /src/skel/usr/bin/kinini-power \
+            /src/skel/usr/bin/kinini-audio-start \
+            /src/skel/usr/bin/kinini-session /src/skel/usr/bin/kinini-labwc \
             /src/skel/etc/profile.d/10-locale.sh \
+            /src/skel/etc/profile.d/12-runtime-dir.sh \
+            /src/skel/etc/skel/.bash_profile \
             /src/niinit/test-parallel.sh /src/niinit/test-deps.sh \
-            /src/niinit/test-sv.sh /src/niinit/test-scx.sh
+            /src/niinit/test-sv.sh /src/niinit/test-scx.sh \
+            /src/niinit/test-wifi.sh /src/niinit/test-power.sh
           # 1.d tasks are shell; .deps files are plain dependency lists
           for f in /src/skel/etc/niinit/1.d/*; do
             case "$f" in *.deps) continue ;; esac
@@ -63,6 +73,12 @@ jobs:
 
       - name: smoke test kinini-scx
         run: /src/niinit/test-scx.sh
+
+      - name: smoke test kinini-wifi
+        run: /src/niinit/test-wifi.sh
+
+      - name: smoke test kinini-power
+        run: /src/niinit/test-power.sh
 
       - name: smoke test svdir
         run: |
@@ -148,6 +164,37 @@ jobs:
           grep -q 'sys/fs/bpf' /tmp/rootfs/etc/niinit/1.d/40-bpffs
           grep -q 'crypttab' /tmp/rootfs/etc/niinit/1.d/60-crypttab
           grep -q 'kinini-scx' /tmp/rootfs/etc/kinini/scx.conf
+          # --- desktop wave (0.5) ---
+          grep -q '^kiwi:' /tmp/rootfs/etc/passwd
+          grep -q '^wheel:' /tmp/rootfs/etc/group
+          grep -q 'kiwi' /tmp/rootfs/etc/group
+          test -f /tmp/rootfs/etc/sudoers.d/kinini-live
+          grep -q 'NOPASSWD: ALL' /tmp/rootfs/etc/sudoers.d/kinini-live
+          test -f /tmp/rootfs/etc/skel/.bash_profile
+          test -x /tmp/rootfs/usr/bin/kinini-wifi
+          test -x /tmp/rootfs/usr/bin/kinini-power
+          test -x /tmp/rootfs/usr/bin/kinini-audio-start
+          test -x /tmp/rootfs/usr/bin/kinini-session
+          test -x /tmp/rootfs/usr/bin/kinini-labwc
+          test -x /tmp/rootfs/etc/niinit/services-available/dbus/run
+          test -x /tmp/rootfs/etc/niinit/services-available/lightdm/run
+          test -f /tmp/rootfs/etc/niinit/services-available/lightdm/deps
+          grep -q '^dbus$' /tmp/rootfs/etc/niinit/services-available/lightdm/deps
+          test -x /tmp/rootfs/etc/niinit/services-available/seatd/run
+          test -x /tmp/rootfs/etc/niinit/services-available/wpa_supplicant/run
+          test ! -e /tmp/rootfs/etc/niinit/services/dbus
+          test ! -e /tmp/rootfs/etc/niinit/services/lightdm
+          test ! -e /tmp/rootfs/etc/niinit/services/seatd
+          test ! -e /tmp/rootfs/etc/niinit/services/wpa_supplicant
+          test -f /tmp/rootfs/etc/lightdm/lightdm.conf
+          grep -q 'session-wrapper=/usr/bin/kinini-session' /tmp/rootfs/etc/lightdm/lightdm.conf
+          test -f /tmp/rootfs/etc/xdg/autostart/kinini-audio.desktop
+          test -f /tmp/rootfs/etc/xdg/labwc/autostart
+          test -f /tmp/rootfs/etc/profile.d/12-runtime-dir.sh
+          test -x /tmp/rootfs/etc/niinit/1.d/80-wifi
+          test -f /tmp/rootfs/etc/niinit/1.d/80-wifi.deps
+          test -x /tmp/rootfs/etc/niinit/1.d/85-power
+          test -f /tmp/rootfs/etc/niinit/1.d/85-power.deps
 
   iso:
     name: iso build
@@ -164,7 +211,7 @@ jobs:
           xbps-install -y gcc make pkg-config libxbps-devel libarchive-devel \
             openssl-devel git cpio xorriso syslinux zstd wget xz \
             mtools dosfstools grub grub-x86_64-efi edk2-ovmf qemu-img \
-            flex bison bc pahole elfutils-devel perl python3
+            flex bison bc pahole elfutils-devel perl python3 ccache kmod
           xbps-install -y qemu-system-amd64 || xbps-install -y qemu-system-x86_64
       - name: build static busybox
         run: |
@@ -185,20 +232,51 @@ jobs:
           git checkout FETCH_HEAD
       - name: build
         run: make -C /src
-      - name: build rootfs
+      - name: build rootfs (with the desktop stack)
         run: |
           IGNORE_PKGS=linux /src/tools/mkrootfs.sh /tmp/rootfs \
             https://repo-default.voidlinux.org/current base-system linux6.12 \
             fastfetch syslinux dhcpcd dosfstools hdparm procps-ng \
-            cryptsetup tzdata glibc-locales scx
-      - name: build kinini kernel (sched_ext)
-        timeout-minutes: 120
+            cryptsetup tzdata glibc-locales scx \
+            sudo opendoas dbus lightdm lightdm-gtk-greeter seatd \
+            xfce4 xfce4-pulseaudio-plugin pavucontrol \
+            labwc foot fuzzel \
+            mesa xorg-server xf86-video-fbdev \
+            dejavu-fonts-ttf adwaita-icon-theme \
+            xdg-user-dirs pipewire wireplumber alsa-pipewire \
+            pulseaudio-utils wpa_supplicant dialog iw polkit
+      - name: kernel build cache (ccache + source tarball)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kinini-kernel-cache
+          key: kinini-kernel-6.18.58-${{ hashFiles('kernel/kinini-x86_64.config') }}
+          restore-keys: |
+            kinini-kernel-6.18.58-
+      - name: download kernel source (cached)
         run: |
           KVER=6.18.58
-          wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
-          /src/tools/mkkernel.sh "linux-$KVER.tar.xz" /tmp/kernel-out
-          install -Dm644 /tmp/kernel-out/vmlinuz-kinini /tmp/rootfs/usr/lib/kinini/vmlinuz-kinini
+          mkdir -p /tmp/kinini-kernel-cache/src /tmp/kinini-kernel-cache/ccache
+          if [ ! -s "/tmp/kinini-kernel-cache/src/linux-$KVER.tar.xz" ]; then
+            wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz" \
+              -O "/tmp/kinini-kernel-cache/src/linux-$KVER.tar.xz"
+          fi
+      - name: build kinini kernel (sched_ext + KMS, ccache)
+        timeout-minutes: 150
+        env:
+          CCACHE_DIR: /tmp/kinini-kernel-cache/ccache
+          CCACHE_MAXSIZE: 5G
+        run: |
+          KVER=6.18.58
+          /src/tools/mkkernel.sh "/tmp/kinini-kernel-cache/src/linux-$KVER.tar.xz" \
+            /tmp/kernel-out
+          install -Dm644 /tmp/kernel-out/vmlinuz-kinini \
+            /tmp/rootfs/usr/lib/kinini/vmlinuz-kinini
           install -Dm644 /tmp/kernel-out/kver /tmp/rootfs/usr/lib/kinini/kver
+          if [ -f /tmp/kernel-out/modules.tar ]; then
+            tar -C /tmp/rootfs -xf /tmp/kernel-out/modules.tar
+            depmod -b /tmp/rootfs "$(cat /tmp/kernel-out/kver)"
+            echo "modules staged: $(du -sh /tmp/rootfs/usr/lib/modules/* | cut -f1)"
+          fi
       - name: build iso
         run: /src/tools/mkiso.sh /tmp/rootfs /tmp/kinini.iso
       - name: smoke kinini kernel (direct boot)
@@ -223,19 +301,24 @@ jobs:
           test -s /tmp/kinini.iso
           test "$(stat -c %s /tmp/kinini.iso)" -gt 50000000
       - name: boot test (bios, install to disk)
-        timeout-minutes: 70
+        timeout-minutes: 90
         run: |
           /src/tools/test-boot.sh /tmp/kinini.iso bios boot
           /src/tools/test-boot.sh /tmp/kinini.iso bios install /tmp/disk-bios.raw
           /src/tools/test-boot.sh /tmp/kinini.iso bios verify /tmp/disk-bios.raw
       - name: boot test (uefi, install to disk)
-        timeout-minutes: 70
+        timeout-minutes: 90
         run: |
           /src/tools/test-boot.sh /tmp/kinini.iso uefi boot
           /src/tools/test-boot.sh /tmp/kinini.iso uefi install /tmp/disk-uefi.raw
           /src/tools/test-boot.sh /tmp/kinini.iso uefi verify /tmp/disk-uefi.raw
+      - name: boot test (uefi, desktop + user out of the box)
+        timeout-minutes: 90
+        run: |
+          /src/tools/test-boot.sh /tmp/kinini.iso uefi install /tmp/disk-desktop.raw desktop
+          /src/tools/test-boot.sh /tmp/kinini.iso uefi verify /tmp/disk-desktop.raw desktop
       - name: boot test (uefi, LUKS2 + locale + scx)
-        timeout-minutes: 70
+        timeout-minutes: 90
         run: |
           /src/tools/test-boot.sh /tmp/kinini.iso uefi install /tmp/disk-luks.raw luks
           /src/tools/test-boot.sh /tmp/kinini.iso uefi verify /tmp/disk-luks.raw luks
@@ -244,3 +327,4 @@ jobs:
         with:
           name: kinini-live-iso
           path: /tmp/kinini.iso
+          compression-level: 0

@@ -181,6 +181,31 @@ if [ -d "$ISOT/rootfs/etc/niinit/services-available/dhcpcd" ]; then
         cp -a "$ISOT/rootfs/etc/niinit/services-available/dhcpcd" \
                 "$ISOT/rootfs/etc/niinit/services/dhcpcd"
 fi
+
+# --- desktop live session ------------------------------------------------
+# the live iso ships the full desktop (Xfce + labwc + LightDM, see the
+# package list in ci.yml). LightDM autologins the live user 'kiwi' into
+# Xfce on tty7; the console gettys (tty1 root, tty2-6) stay for the
+# installer and rescue work. kiwi-install removes the autologin block
+# and re-picks the enabled services from the flags at install time.
+if [ -f "$ISOT/rootfs/etc/lightdm/lightdm.conf" ]; then
+        sed -i '/^\[Seat:\*\]/a autologin-user=kiwi\nautologin-session=xfce\nautologin-timeout=0' \
+                "$ISOT/rootfs/etc/lightdm/lightdm.conf"
+fi
+for s in dbus lightdm seatd; do
+        if [ -d "$ISOT/rootfs/etc/niinit/services-available/$s" ]; then
+                rm -rf "$ISOT/rootfs/etc/niinit/services/$s"
+                cp -a "$ISOT/rootfs/etc/niinit/services-available/$s" \
+                        "$ISOT/rootfs/etc/niinit/services/$s"
+        fi
+done
+# wpa_supplicant is enabled by the 80-wifi stage-1 task when wireless
+# hardware is actually present (no crash loops on wifi-less machines)
+cat >> "$ISOT/rootfs/etc/issue" <<'EOF'
+
+ Xfce autologin as "kiwi" on tty7 - installer: kiwi-install
+ wifi: kinini-wifi      scheduler: kinini-scx      power: kinini-power
+EOF
 ln -sf niinit "$ISOT/rootfs/sbin/init"
 
 # marker consumed by the grub EFI binary (search --file /.kinini-live):

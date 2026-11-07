@@ -1,0 +1,282 @@
+#!/bin/sh
+# kinini-wifi - connect to wireless networks from the terminal
+#
+#   kinini-wifi            interactive network picker (wifi-menu spirit)
+#   kinini-wifi status     current link state, ssid and address
+#   kinini-wifi rescan     trigger a scan and print what was found
+#
+# a plain dialog menu over wpa_cli - no NetworkManager, no daemon of its
+# own. requires the wpa_supplicant service (svctl up wpa_supplicant; the
+# live iso and kiwi-install enable it automatically when wifi hardware
+# is present) and membership in 'wheel' or root for the control socket.
+# picked networks are saved to /etc/wpa_supplicant/wpa_supplicant.conf
+# (update_config=1), dhcpcd grabs the address.
+
+set -u
+
+WPA_CLI=${KININI_WIFI_WPA_CLI:-wpa_cli}
+DIALOG=${KININI_WIFI_DIALOG:-dialog}
+SYSFS=${KININI_WIFI_SYSFS:-/sys/class/net}
+TAB=$(printf '\t')
+TMP=$(mktemp -d /tmp/kinini-wifi.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT
+
+die() {
+        echo "kinini-wifi: $*" >&2
+        exit 1
+}
+
+usage() {
+        sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+        exit "${1:-0}"
+}
+
+# ---------------------------------------------------------------- iface
+find_iface() {
+        for d in "$SYSFS"/*; do
+                [ -e "$d/wireless" ] || continue
+                echo "${d##*/}"
+                return 0
+        done
+        return 1
+}
+
+IFACE=
+while [ $# -gt 0 ]; do
+        case "$1" in
+        -i)     [ $# -ge 2 ] || usage 2
+                IFACE=$2
+                shift 2
+                ;;
+        -h)     usage 0 ;;
+        status | rescan)
+                CMD=$1
+                shift
+                ;;
+        *)      usage 2 ;;
+        esac
+done
+[ -n "$IFACE" ] || IFACE=$(find_iface) \
+        || die "no wireless interface (is the driver loaded?)"
+
+# every wpa_cli call goes through here; the "Selected interface" banner
+# is noise - drop it
+wpac() {
+        # shellcheck disable=SC2086
+        "$WPA_CLI" -i "$IFACE" "$@" 2>/dev/null | sed '/^Selected interface/d'
+}
+
+# the control socket is root:wheel - fail with a hint instead of
+# "could not connect to wpa_supplicant" gibberish
+if [ "$(id -u)" != 0 ] && ! id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx wheel; then
+        die "you need root or the 'wheel' group (try: sudo kinini-wifi)"
+fi
+wpac ping >/dev/null 2>&1 || wpac status >/dev/null 2>&1 \
+        || die "wpa_supplicant is not reachable (svctl up wpa_supplicant)"
+
+# ---------------------------------------------------------------- ui
+# menu_pick TITLE -> selected tag on stdout (dialog menu or plain text)
+menu_pick() {
+        _title=$1
+        shift
+        if command -v "$DIALOG" >/dev/null 2>&1; then
+                "$DIALOG" --clear --menu "$_title" 0 0 0 "$@" \
+                        2>"$TMP/pick" </dev/null || return 1
+                tr -d '"' < "$TMP/pick"
+        else
+                # no dialog: numbered list fallback
+                printf '%s\n' "$_title"
+                _i=1
+                while [ $# -ge 2 ]; do
+                        printf '  %2d) %s\n' "$_i" "$2"
+                        _i=$((_i + 1))
+                        shift 2
+                done
+                printf 'number: '
+                read -r _n
+                case "$_n" in
+                '' | *[!0-9]*) return 1 ;;
+                esac
+                echo "$_n"
+        fi
+}
+
+# ask_pass PROMPT -> typed password on stdout (hidden)
+ask_pass() {
+        if command -v "$DIALOG" >/dev/null 2>&1; then
+                "$DIALOG" --clear --insecure --passwordbox "$1" 9 50 \
+                        2>"$TMP/pass" </dev/null || return 1
+                tr -d '"' < "$TMP/pass"
+        else
+                printf '%s' "$1"
+                stty -echo 2>/dev/null || true
+                read -r _p
+                stty echo 2>/dev/null || true
+                echo
+                echo "$_p"
+        fi
+}
+
+ask_line() {
+        if command -v "$DIALOG" >/dev/null 2>&1; then
+                "$DIALOG" --clear --inputbox "$1" 9 50 \
+                        2>"$TMP/line" </dev/null || return 1
+                tr -d '"' < "$TMP/line"
+        else
+                printf '%s' "$1"
+                read -r _l
+                echo "$_l"
+        fi
+}
+
+# ---------------------------------------------------------------- scan
+# print "signal<TAB>flags<TAB>ssid" sorted by signal strength, hidden
+# ssids dropped (they are reachable through the hidden-network entry),
+# duplicates folded to the strongest bssid
+scan_list() {
+        wpac scan >/dev/null 2>&1
+        n=0
+        while [ "$n" -lt 10 ]; do
+                wpac scan_results > "$TMP/results" 2>/dev/null
+                [ "$(wc -l < "$TMP/results")" -gt 1 ] && break
+                sleep 1
+                n=$((n + 1))
+        done
+        # sort by signal first, THEN fold duplicates to the strongest
+        # bssid (a dedup before the sort would keep whichever row appeared
+        # first in the scan), then drop the signal column for the menu
+        sed -n '2,$p' "$TMP/results" | awk -F"$TAB" '
+                NF >= 5 && $5 != "" {
+                        sig = $3 + 0
+                        enc = ($4 ~ /WPA|RSN/) ? "[enc]" : "[open]"
+                        printf "%d\t%s\t%s\t%s\n", sig, enc, $5, $5
+                }' | sort -t"$TAB" -k1,1rn \
+                | awk -F"$TAB" '!seen[$3]++' | cut -f2-4
+}
+
+cmd_rescan() {
+        echo "scanning ($IFACE)..."
+        scan_list
+        exit 0
+}
+
+# ---------------------------------------------------------------- connect
+remove_existing() {
+        # drop saved entries for the same ssid so reconnects do not pile up
+        wpac list_network 2>/dev/null | sed -n '2,$p' | awk -F"$TAB" -v s="$1" '
+                $2 == s { print $1 }' | while read -r _id; do
+                [ -n "$_id" ] && wpac remove_network "$_id" >/dev/null 2>&1
+        done
+}
+
+connect() {
+        _ssid=$1
+        _enc=$2
+        remove_existing "$_ssid"
+        _n=$(wpac add_network | tr -d '"') || die "add_network failed"
+        case "${_n:-}" in
+        '' | *[!0-9]*) die "add_network failed ($_n)" ;;
+        esac
+        wpac set_network "$_n" ssid "\"$_ssid\"" >/dev/null
+        if [ "$_enc" = open ]; then
+                wpac set_network "$_n" key_mgmt NONE >/dev/null
+        else
+                _p=$(ask_pass "Password for $_ssid") || die "cancelled"
+                [ -n "$_p" ] || die "empty password"
+                wpac set_network "$_n" psk "\"$_p\"" >/dev/null
+        fi
+        wpac enable_network "$_n" >/dev/null
+        wpac select_network "$_n" >/dev/null
+        wpac save_config >/dev/null && echo "saved $_ssid to wpa_supplicant.conf"
+
+        printf 'connecting to %s ' "$_ssid"
+        n=0
+        while [ "$n" -lt 20 ]; do
+                if wpac status | grep -q '^wpa_state=COMPLETED'; then
+                        echo "link up"
+                        break
+                fi
+                printf '.'
+                sleep 1
+                n=$((n + 1))
+        done
+        if ! wpac status | grep -q '^wpa_state=COMPLETED'; then
+                echo " FAILED (wrong password?)"
+                wpac remove_network "$_n" >/dev/null 2>&1
+                exit 1
+        fi
+        # dhcpcd (master mode) watches the interface and leases an address
+        printf 'waiting for an address '
+        n=0
+        while [ "$n" -lt 20 ]; do
+                if ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q inet; then
+                        echo " ok"
+                        ip -4 addr show dev "$IFACE" | grep inet | head -n 1
+                        echo "done: connected to $_ssid"
+                        return 0
+                fi
+                printf '.'
+                sleep 1
+                n=$((n + 1))
+        done
+        echo " TIMEOUT"
+        echo "link is up but no lease - check dhcpcd (svctl status dhcpcd)"
+        return 0
+}
+
+# ---------------------------------------------------------------- status
+cmd_status() {
+        printf 'interface:  %s\n' "$IFACE"
+        wpac status | sed -n -e 's/^wpa_state=/state:      /p' \
+                -e 's/^ssid=/ssid:        /p'
+        ip -4 addr show dev "$IFACE" 2>/dev/null \
+                | sed -n 's/.*inet \([^ ]*\).*/address:    \1/p'
+        exit 0
+}
+
+case "${CMD:-menu}" in
+status) cmd_status ;;
+rescan) cmd_rescan ;;
+menu)
+        # shellcheck disable=SC2119
+        NETS=$(scan_list)
+        [ -n "$NETS" ] || die "no networks found (kinini-wifi rescan to retry)"
+
+        # menu.txt: "tag<TAB>ssid<TAB>enc"; dialog items are "ssid (enc)"
+        # plus the hidden-network entry, mapped back through the file
+        i=0
+        printf '%s\n' "$NETS" | while IFS="$TAB" read -r _enc ssid _; do
+                i=$((i + 1))
+                printf '%s\t%s\t%s\n' "$i" "$ssid" "$_enc"
+        done > "$TMP/menu.txt"
+        printf 'h\thidden\thidden\n' >> "$TMP/menu.txt"
+
+        set --
+        while IFS="$TAB" read -r tag ssid enc; do
+                set -- "$@" "$tag" "$ssid ($enc)"
+        done < "$TMP/menu.txt"
+        TAG=$(menu_pick "networks on $IFACE" "$@") || die "cancelled"
+        case "$TAG" in
+        *[!0-9h]*) die "invalid choice: $TAG" ;;
+        esac
+        if [ "$TAG" = h ]; then
+                SSID=$(ask_line "Hidden network SSID") || die "cancelled"
+                [ -n "$SSID" ] || die "empty ssid"
+                P1=$(ask_pass "Password (empty for open)") || die "cancelled"
+                if [ -n "$P1" ]; then
+                        connect "$SSID" enc
+                else
+                        connect "$SSID" open
+                fi
+                exit 0
+        fi
+        SSID=$(sed -n "${TAG}s/^[0-9]*${TAB}\([^${TAB}]*\)${TAB}.*/\1/p" "$TMP/menu.txt")
+        ENC=$(sed -n "${TAG}s/.*${TAB}//p" "$TMP/menu.txt")
+        [ -n "$SSID" ] || die "invalid choice: $TAG"
+        case "$ENC" in
+        *open*) connect "$SSID" open ;;
+        *)      connect "$SSID" enc ;;
+        esac
+        ;;
+*)      usage 2 ;;
+esac

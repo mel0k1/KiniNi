@@ -54,5 +54,33 @@ if echo "root:kinini" | chroot "$TARGET" chpasswd 2>/dev/null; then
         echo "mkrootfs: root password set to 'kinini' (change it)"
 fi
 
+# the live user 'kiwi' (uid 1000): autologin target of the graphical
+# session (mkiso.sh configures LightDM), groups for direct rendering,
+# audio and seatd. kiwi-install creates the real user at install time
+# and strips the live-only bits (autologin, NOPASSWD sudo) from the
+# target. skipped when the rootfs has no useradd (bare base-system).
+if chroot "$TARGET" sh -c 'command -v useradd >/dev/null 2>&1'; then
+        # the loop vars expand inside the chroot shell, not here
+        # shellcheck disable=SC2016
+        chroot "$TARGET" sh -c '
+                for g in wheel video audio input; do
+                        grep -q "^$g:" /etc/group || groupadd -r "$g"
+                done
+                id -u kiwi >/dev/null 2>&1 || useradd -m -s /bin/bash \
+                        -G wheel,video,audio,input kiwi
+        ' || echo "mkrootfs: warning: could not create the live user"
+        if chroot "$TARGET" id -u kiwi >/dev/null 2>&1; then
+                if echo "kiwi:kinini" | chroot "$TARGET" chpasswd 2>/dev/null; then
+                        echo "mkrootfs: live user 'kiwi' password set to 'kinini'"
+                fi
+                if [ -f "$TARGET/usr/bin/sudo" ]; then
+                        mkdir -p "$TARGET/etc/sudoers.d"
+                        printf 'kiwi ALL=(ALL:ALL) NOPASSWD: ALL\n' \
+                                > "$TARGET/etc/sudoers.d/kinini-live"
+                        chmod 440 "$TARGET/etc/sudoers.d/kinini-live"
+                fi
+        fi
+fi
+
 echo "mkrootfs: KiniNi rootfs ready at $TARGET"
 echo "mkrootfs: boot with init=/sbin/niinit"

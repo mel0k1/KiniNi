@@ -1,0 +1,6 @@
+#!/bin/sh
+# seat management daemon (libseat backends): lets wayland compositors
+# (labwc) and other clients in the 'video' group take the seat without
+# elogind/systemd-logind. Xorg under LightDM runs as root and does not
+# need it, but keeping it supervised costs nothing.
+exec seatd -g video 2>&1

@@ -1,0 +1,14 @@
+#!/bin/sh
+# system message bus: the desktop stack (LightDM, Xfce, pipewire,
+# polkit, ...) talks through it. void-runit-style service, minus runit.
+[ -d /run/dbus ] || install -d -m755 -o root -g root /run/dbus
+# a stable machine id: dbus refuses to talk without one and the desktop
+# stack expects /etc/machine-id (generate once, on the writable layer)
+if [ ! -s /etc/machine-id ]; then
+        if command -v dbus-uuidgen >/dev/null 2>&1; then
+                dbus-uuidgen --ensure >/dev/null 2>&1 || true
+                [ -s /etc/machine-id ] || dbus-uuidgen > /etc/machine-id 2>/dev/null
+        fi
+fi
+echo "dbus: starting the system message bus"
+exec dbus-daemon --system --nofork --nopidfile 2>&1

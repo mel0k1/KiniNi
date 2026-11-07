@@ -4,16 +4,21 @@
 # always points at a single step:
 #
 #   test-boot.sh <iso> <bios|uefi> boot            live boot checks
-#   test-boot.sh <iso> <bios|uefi> install <disk> [luks]  run kiwi-install
-#   test-boot.sh <iso> <bios|uefi> verify <disk>  [luks]  boot installed
+#   test-boot.sh <iso> <bios|uefi> install <disk> [scenario]  run kiwi-install
+#   test-boot.sh <iso> <bios|uefi> verify <disk>  [scenario]  boot installed
+#
+# scenarios:
+#   plain    kiwi-install -D /dev/vda -y -s 256 (live desktop enabled)
+#   luks     LUKS2 root (-d none), Europe/Moscow, ru_RU.UTF-8, scx_lavd
+#   desktop  -d xfce -u kinini -P (password file): user out of the box,
+#            sudo, dbus/seatd/lightdm services, Xfce autologin in live
 #
 # the install/verify phases use a raw disk image (create it with
 # qemu-img). verify checks login, zram swap, tuned swappiness and a
-# DHCP lease from the qemu builtin DHCP server. the optional "luks"
-# mode installs with LUKS2 root encryption, Europe/Moscow timezone,
-# ru_RU.UTF-8 locale and the scx_lavd sched_ext scheduler, then
-# verifies: passphrase unlock at boot, /etc/localtime, $LANG, the
-# attached scx scheduler and the ephemeral encrypted swap.
+# DHCP lease from the qemu builtin DHCP server; scenario extras are
+# checked on top (passphrase unlock, locales, the attached scx
+# scheduler, the ephemeral encrypted swap, the created user, sudo,
+# the graphical stack).
 #
 # env:
 #   QEMU     qemu-system-x86_64 binary (auto-detected)
@@ -29,8 +34,8 @@ have() {
 
 usage() {
         echo "usage: $0 <iso> <bios|uefi> boot" >&2
-        echo "       $0 <iso> <bios|uefi> install <disk> [luks]" >&2
-        echo "       $0 <iso> <bios|uefi> verify <disk> [luks]" >&2
+        echo "       $0 <iso> <bios|uefi> install <disk> [plain|luks|desktop]" >&2
+        echo "       $0 <iso> <bios|uefi> verify <disk> [plain|luks|desktop]" >&2
         exit 2
 }
 
@@ -51,7 +56,7 @@ install|verify)
         DISK=$(readlink -f "$4")
         [ $# -le 5 ] || usage
         SCENARIO=${5:-plain}
-        case "$SCENARIO" in plain|luks) ;; *) usage ;; esac
+        case "$SCENARIO" in plain|luks|desktop) ;; *) usage ;; esac
         if [ "$PHASE" = install ]; then
                 # create the image on the fly (4 GiB sparse)
                 have qemu-img || { echo "test-boot: qemu-img not found" >&2; exit 1; }
@@ -213,18 +218,82 @@ wait_live_shell() {
         echo "test-boot: [$FW] zram swap active"
 }
 
+check_live_desktop() {
+        # the live desktop: user 'kiwi', dbus/seatd/lightdm services up,
+        # LightDM autologin brings X and the Xfce session up on tty7 and
+        # the XDG autostart starts the PipeWire stack for that session.
+        # everything is slow under TCG: bounded poll loops with a diag
+        # dump before failing.
+        send 'id kiwi >/dev/null 2>&1 && echo "KIWI""_OK"'
+        wait_for "KIWI_OK" "waiting for the live user check"
+        send 'test -x /usr/bin/startxfce4 -a -x /usr/bin/labwc -a -x /usr/bin/lightdm && echo "DESKPKGS""_OK"'
+        wait_for "DESKPKGS_OK" "waiting for the desktop packages check"
+        # shellcheck disable=SC2016
+        send 'for s in dbus seatd lightdm; do grep -qs up /etc/niinit/services/$s/stat || echo "MISS$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
+        n=0
+        while ! grep -qs "LDM_OK" "$LOG"; do
+                if [ "$n" -ge 120 ]; then
+                        # shellcheck disable=SC2016
+                        send 'echo "=== LDM DIAG ==="; for s in dbus seatd lightdm; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; grep -qs MISS lightdm /dev/null; echo "=== LDMDIAG""_DONE ==="'
+                        sleep 4
+                        fail "lightdm service not up (diag above)"
+                fi
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        echo "test-boot: [$FW] lightdm service up"
+        # Xorg + xfce4-session + pipewire: LightDM autologin -> X on tty7
+        # shellcheck disable=SC2016
+        send 'for i in $(seq 1 150); do pgrep -x Xorg >/dev/null && pgrep -x xfce4-session >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"; pgrep -x xfce4-session >/dev/null && echo "XFCE""_OK"'
+        n=0
+        while :; do
+                x=0; xf=0
+                grep -qs "XORG_OK" "$LOG" && x=1
+                grep -qs "XFCE_OK" "$LOG" && xf=1
+                [ "$x" = 1 ] && [ "$xf" = 1 ] && break
+                if [ "$n" -ge 180 ]; then
+                        # shellcheck disable=SC2016
+                        send 'echo "=== DESKTOP DIAG ==="; pgrep -a Xorg 2>/dev/null | head -2; pgrep -a xfce4-session 2>/dev/null | head -2; tail -20 /var/log/lightdm.log 2>/dev/null; ls /var/log/lightdm/ 2>/dev/null; cat /etc/lightdm/lightdm.conf | grep -v "^#" | grep .; echo "=== DESKDIAG""_DONE ==="'
+                        sleep 5
+                        fail "Xfce session did not start (diag above)"
+                fi
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        echo "test-boot: [$FW] Xorg + Xfce session running (autologin)"
+        # shellcheck disable=SC2016
+        # shellcheck disable=SC2016
+        send 'for i in $(seq 1 60); do pgrep -x pipewire >/dev/null && break; sleep 2; done; pgrep -x pipewire >/dev/null && echo "PW""_OK"'
+        n=0
+        while ! grep -qs "PW_OK" "$LOG"; do
+                if [ "$n" -ge 60 ]; then
+                        # shellcheck disable=SC2016
+                        send 'echo "=== AUDIO DIAG ==="; pgrep -a pipewire | head -3; pgrep -a wireplumber | head -2; echo "=== AUDIODIAG""_DONE ==="'
+                        sleep 4
+                        fail "pipewire did not start in the live session (diag above)"
+                fi
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        echo "test-boot: [$FW] PipeWire audio stack running in the user session"
+}
+
 wait_installed_shell() {
+        # wait_installed_shell [USER] [PASSWORD] - root/kinini by default;
+        # the desktop scenario logs in as the user created by the installer
+        _user=${1:-root}
+        _pass=${2:-kinini}
         wait_for "kinini login" "waiting for the installed system"
-        send root
+        send "$_user"
         wait_for "Password" "waiting for password prompt"
         sleep 1
-        send kinini
+        send "$_pass"
         # login flushes the pending tty input when handing over to the
         # shell, so sync on the prompt shape before sending markers
         wait_for "bash-5" "waiting for the post-login shell"
         send 'echo "LOGIN""_OK"'
         wait_for "LOGIN_OK" "waiting for login"
-        echo "test-boot: [$FW] installed system booted, logged in"
+        echo "test-boot: [$FW] installed system booted, logged in as $_user"
 }
 
 check_basic_tuning() {
@@ -235,6 +304,46 @@ check_basic_tuning() {
         send 'sysctl -n vm.swappiness | grep -qx 150 && echo "TUNE""_OK"'
         wait_for "TUNE_OK" "waiting for swappiness check"
         dhcp_check
+}
+
+check_desktop_install() {
+        # the installed desktop: user, groups, sudo, services, X session
+        send 'id | grep -q "wheel" && id | grep -q "video" && id | grep -q "audio" && id | grep -q "input" && echo "GRP""_OK"'
+        wait_for "GRP_OK" "waiting for the user groups check"
+        send 'echo user123 | sudo -S -p "" true && echo "SUDO""_OK"'
+        wait_for "SUDO_OK" "waiting for the sudo check"
+        send 'grep -q "^%wheel ALL=(ALL:ALL) ALL" /etc/sudoers.d/wheel && ! test -f /etc/sudoers.d/kinini-live && echo "WHEELCFG""_OK"'
+        wait_for "WHEELCFG_OK" "waiting for the sudoers config check"
+        send 'test -f /etc/lightdm/lightdm.conf && ! grep -q "^autologin-user" /etc/lightdm/lightdm.conf && echo "NOAUTO""_OK"'
+        wait_for "NOAUTO_OK" "waiting for the autologin strip check"
+        # shellcheck disable=SC2016
+        send 'for s in dbus seatd lightdm dhcpcd; do grep -qs up /etc/niinit/services/$s/stat || echo "DOWN$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
+        n=0
+        while ! grep -qs "LDM_OK" "$LOG"; do
+                if [ "$n" -ge 120 ]; then
+                        # shellcheck disable=SC2016
+                        send 'echo "=== SVCDIAG ==="; for s in dbus seatd lightdm dhcpcd; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; echo "=== SVCDIAG""_DONE ==="'
+                        sleep 4
+                        fail "installed desktop services not up (diag above)"
+                fi
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        echo "test-boot: [$FW] dbus/seatd/lightdm/dhcpcd services verified"
+        # shellcheck disable=SC2016
+        send 'for i in $(seq 1 90); do pgrep -x Xorg >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"'
+        n=0
+        while ! grep -qs "XORG_OK" "$LOG"; do
+                if [ "$n" -ge 120 ]; then
+                        # shellcheck disable=SC2016
+                        send 'echo "=== XDIAG ==="; pgrep -a Xorg | head -2; tail -20 /var/log/lightdm.log 2>/dev/null; ls /dev/dri 2>&1; echo "=== XDIAG""_DONE ==="'
+                        sleep 4
+                        fail "Xorg did not start on the installed system (diag above)"
+                fi
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        echo "test-boot: [$FW] Xorg verified on the installed system"
 }
 
 # wait for a SLIRP DHCP lease (dhcpcd -M runs from the niinit service).
@@ -267,8 +376,9 @@ boot)
         # baseline: the live system runs the Void kernel - a failed lease
         # here points at the CI environment, not at the KiniNi kernel
         dhcp_check
+        check_live_desktop
         poweroff_and_wait
-        echo "test-boot: [$FW] live boot + poweroff OK"
+        echo "test-boot: [$FW] live boot + desktop + poweroff OK"
         ;;
 install)
         echo "test-boot: [$FW] installing to disk, scenario=$SCENARIO (this takes a while)"
@@ -276,12 +386,15 @@ install)
         wait_live_shell
         if [ "$SCENARIO" = luks ]; then
                 send 'printf kiwi123 > /root/lukskey'
-                send 'kiwi-install -d /dev/vda -y -s 256 -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd'
+                send 'kiwi-install -D /dev/vda -y -s 256 -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd -d none'
+        elif [ "$SCENARIO" = desktop ]; then
+                send 'printf user123 > /root/upass'
+                send 'kiwi-install -D /dev/vda -y -s 256 -d xfce -u kinini -P /root/upass'
         else
-                send "kiwi-install -d /dev/vda -y -s 256"
+                send "kiwi-install -D /dev/vda -y -s 256"
         fi
         wait_for "done: KiniNi installed" "waiting for the installer"
-        wait_for "timezone: " "waiting for the installer summary"
+        wait_for "desktop: " "waiting for the installer summary"
         echo "test-boot: [$FW] install finished"
         poweroff_and_wait
         echo "test-boot: [$FW] install + poweroff OK"
@@ -324,8 +437,16 @@ verify)
                 send kiwi123
                 echo "test-boot: [$FW] LUKS passphrase accepted"
         fi
-        wait_installed_shell
+        if [ "$SCENARIO" = desktop ]; then
+                wait_installed_shell kinini user123
+        else
+                wait_installed_shell
+        fi
         check_basic_tuning
+        if [ "$SCENARIO" = desktop ]; then
+                check_desktop_install
+                echo "test-boot: [$FW] desktop install verified (user + sudo + services + X)"
+        fi
         if [ "$SCENARIO" = luks ]; then
                 send 'test -b /dev/mapper/kinini && echo "LUKSDEV""_OK"'
                 wait_for "LUKSDEV_OK" "waiting for the LUKS device check"
@@ -391,7 +512,22 @@ verify)
                 wait_for "SCXUP_OK" "waiting for the scx service state check"
                 echo "test-boot: [$FW] LUKS + timezone + locale + scx verified"
         fi
-        poweroff_and_wait
+        if [ "$SCENARIO" = desktop ]; then
+                # a regular user cannot call the PID1 argv0 helpers directly:
+                # sudo with the wheel sudoers (password on stdin)
+                send 'echo user123 | sudo -S poweroff'
+        else
+                send poweroff
+        fi
+        # qemu exits on guest power-off (niinit -> reboot(2))
+        n=0
+        while kill -0 "$QPID" 2>/dev/null; do
+                [ "$n" -ge 600 ] && fail "guest did not power off cleanly"
+                sleep 2
+                n=$(( n + 2 ))
+        done
+        wait "$QPID" 2>/dev/null || true
+        QPID=
         echo "test-boot: [$FW] installed boot + poweroff OK"
         ;;
 esac

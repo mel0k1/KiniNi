@@ -1,0 +1,25 @@
+#!/bin/sh
+# kinini-session - LightDM session wrapper (session-wrapper= in
+# /etc/lightdm/lightdm.conf). a graphical session without systemd or
+# elogind still needs:
+#   - XDG_RUNTIME_DIR (pipewire sockets, wayland, portals)
+#   - the system locale (lightdm does not read /etc/locale.conf)
+#   - xdg-user-dirs on the first login
+# then the session command (startxfce4, ...) takes over.
+uid=$(id -u)
+if [ "$uid" -gt 0 ]; then
+        if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+                XDG_RUNTIME_DIR="/run/user/$uid"
+                export XDG_RUNTIME_DIR
+        fi
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null
+        chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+fi
+# shellcheck disable=SC1091
+[ -r /etc/locale.conf ] && . /etc/locale.conf
+[ -n "${LANG:-}" ] && export LANG
+if [ -n "${HOME:-}" ] && [ ! -f "$HOME/.config/user-dirs.dirs" ] \
+        && [ -x /usr/bin/xdg-user-dirs-update ]; then
+        /usr/bin/xdg-user-dirs-update >/dev/null 2>&1 || true
+fi
+exec "$@"

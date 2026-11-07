@@ -50,8 +50,11 @@ and surprisingly resilient. The ASCII bird greets you on every console via
 | **mkiso** | Builds a bootable live ISO: kernel, initramfs, isolinux + grub-efi (BIOS **and** UEFI), overlayfs root, disk installer on board | POSIX sh |
 | **kiwi-install** | Disk installer: partitions (msdos/GPT), LUKS2 root encryption, ephemeral encrypted swap, timezone + locale selection, sched_ext scheduler setup, offline extlinux (BIOS) or grub-on-ESP (UEFI) bootloader | POSIX sh |
 | **kinini-scx** | sched_ext scheduler selector: `status` / `list` / `use <sched> --now` (live switch) / `on` / `off` / `top` / `log` — CachyOS `scxctl` experience without D-Bus | POSIX sh |
+| **kinini-wifi** | wifi-menu-style TUI connector over `wpa_cli` (scan, pick, connect, save) — no NetworkManager | POSIX sh |
+| **kinini-power** | TLP-lite power profiles (`battery` / `perf`): cpufreq governor, EPP, USB autosuspend, wifi power saving, writeback interval, scx scheduler — no daemon | POSIX sh |
+| **kinini-session / kinini-audio-start** | the desktop glue without systemd: a LightDM session wrapper (XDG_RUNTIME_DIR + locale + xdg-user-dirs) and the per-user PipeWire stack starter | POSIX sh |
 | **kinini-settings** | CachyOS-inspired tuning shipped in the skel: sysctl.d profile, per-device IO-scheduler udev rules, zram swap, watchdog blacklists | conf/sh |
-| **kinini kernel** | Vanilla Linux LTS built in CI over `allnoconfig` + a curated fragment: **sched_ext enabled**, BTF, all boot-critical drivers built in (no initramfs modules), zram/bfq/BBR onboard | config + CI |
+| **kinini kernel** | Vanilla Linux stable built in CI over `allnoconfig` + a curated fragment: **sched_ext enabled**, BTF, KMS (bochs/virtio-gpu built in, i915/amdgpu/xe/nouveau as modules), HDA audio, evdev input — boot-critical drivers built in (no initramfs modules), zram/bfq/BBR onboard | config + CI |
 
 ## Quick start
 
@@ -86,29 +89,67 @@ BIOS and a standalone grub `x86_64-efi` on an appended FAT ESP for UEFI
 types):
 
 ```sh
-# rootfs with a kernel and fastfetch (linux metapackage is skipped,
+# rootfs with the full desktop stack (linux metapackage is skipped,
 # the LTS kernel series is pinned explicitly):
 IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
         https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch \
-        syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx
+        syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx \
+        sudo opendoas dbus lightdm lightdm-gtk-greeter seatd \
+        xfce4 xfce4-pulseaudio-plugin pavucontrol labwc foot fuzzel \
+        mesa xorg-server xf86-video-fbdev dejavu-fonts-ttf adwaita-icon-theme \
+        xdg-user-dirs pipewire wireplumber alsa-pipewire pulseaudio-utils \
+        wpa_supplicant dialog iw polkit
 
-./tools/mkiso.sh /tmp/rootfs kinini-0.4-x86_64.iso
+./tools/mkiso.sh /tmp/rootfs kinini-0.5-x86_64.iso
 ```
 
 Test it in qemu (BIOS or OVMF/UEFI — the same image):
 
 ```sh
-qemu-system-x86_64 -m 1024 -cdrom kinini-0.4-x86_64.iso -boot d
-qemu-system-x86_64 -m 1024 -cdrom kinini-0.4-x86_64.iso -bios OVMF.fd
+qemu-system-x86_64 -m 2048 -cdrom kinini-0.5-x86_64.iso -boot d
+qemu-system-x86_64 -m 2048 -cdrom kinini-0.5-x86_64.iso -bios OVMF.fd
 ```
 
-The live session autologs in on tty1 and ttyS0, brings the network up via
-DHCP (`dhcpcd` service, enabled on the live image) and greets you with the
-bird:
+The live session boots straight into the **desktop**: LightDM autologins the
+live user `kiwi` (password `kinini`, passwordless `sudo` — a live-only
+convenience the installer removes) into an **Xfce** session on tty7; the
+console gettys stay on tty1–tty6. A **labwc** Wayland session ships too
+(`kinini-labwc` from a console login). DHCP is up (`dhcpcd`), wireless is
+enabled when hardware is present, and the PipeWire audio stack starts in the
+session — sound with zero configuration. The bird still greets the
+consoles:
 
 <p align="center">
   <img src="assets/screenshot-fastfetch.png" width="720" alt="KiniNi live console with fastfetch and the kiwi mascot"/>
 </p>
+
+## Desktop out of the box
+
+The 0.5 release is desktop-first: graphics, sound, a user and wifi are set
+up before you touch anything.
+
+- **Graphics**: Xfce 4.20 + LightDM/seatd and a labwc Wayland session ship
+  on the ISO; `mesa` is on board. The KiniNi kernel has KMS built in
+  (bochs/virtio-gpu in the kernel; i915, amdgpu, xe and nouveau as modules
+  loaded by udev on the installed system). Modern AMD/NVIDIA cards also need
+  firmware: `kipki install linux-firmware`.
+- **Sound**: `pipewire` + `wireplumber` + `pipewire-pulse` start per-user
+  from the session (XDG autostart on Xfce, labwc autostart, or
+  `kinini-audio-start` on a tty) — ALSA apps route through `alsa-pipewire`,
+  Pulse apps through the socket. No config files, no daemon.
+- **User**: the installer creates your regular user (in `wheel`, `video`,
+  `audio`, `input`) with `sudo` or `doas` — see *Installing to disk*.
+- **Wi-Fi**: `wpa_supplicant` + `kinini-wifi` — a wifi-menu-style TUI over
+  `wpa_cli`: pick a network, type the passphrase, the lease comes from
+  dhcpcd. Networks are saved to
+  `/etc/wpa_supplicant/wpa_supplicant.conf` and carried over from the live
+  session to the installed system by the installer. No NetworkManager.
+- **Power**: `kinini-power battery | perf | status` — TLP-lite profiles
+  (cpufreq governor + EPP, USB autosuspend, wifi power saving, dirty
+  writeback) that also flip the sched_ext scheduler (battery → `scx_lavd`,
+  perf → `scx_bpfland`). The chosen profile persists in
+  `/etc/kinini/power.conf` and is re-applied at every boot by the
+  `1.d/85-power` stage-1 task.
 
 ## Package management with kipki
 
@@ -205,17 +246,19 @@ installer autodetects the firmware via `/sys/firmware/efi/efivars`) and run
 as root:
 
 ```sh
-kiwi-install -d /dev/sda -y              # BIOS: msdos + extlinux
-kiwi-install -d /dev/nvme0n1 -y          # UEFI (autodetected): GPT + ESP + grub
-kiwi-install -d /dev/sda -b uefi -y      # force UEFI layout on a BIOS boot
-kiwi-install -d /dev/sda -s 0 -N -y      # no swap partition, no DHCP
+kiwi-install -D /dev/sda -y              # BIOS: msdos + extlinux
+kiwi-install -D /dev/nvme0n1 -y          # UEFI (autodetected): GPT + ESP + grub
+kiwi-install -D /dev/sda -b uefi -y      # force UEFI layout on a BIOS boot
+kiwi-install -D /dev/sda -s 0 -N -y      # no swap partition, no DHCP
 ```
 
+(since 0.5 the disk is `-D`; `-d` selects the desktop)
+
 It partitions the disk, creates a swap partition (default `min(2×RAM, 4 GiB)`,
-`-s` to change) and an ext4 root, copies the live system, restores the
-standard gettys (no autologin on a real install), enables the `dhcpcd`
-service (unless `-N`), writes an `/etc/fstab` and installs a bootloader —
-all offline, from binaries shipped inside the ISO:
+`-s` to change) and an ext4 root, copies the live system, un-applies the
+live-only tweaks (autologin, the NOPASSWD live sudo, live services), enables
+exactly the services you asked for, writes an `/etc/fstab` and installs a
+bootloader — all offline, from binaries shipped inside the ISO:
 
 - **BIOS**: msdos label, extlinux + syslinux MBR;
 - **UEFI**: GPT with a 512 MiB ESP, and the standalone grub `x86_64-efi`
@@ -226,20 +269,42 @@ all offline, from binaries shipped inside the ISO:
 
 zram swap is configured in addition to the swap partition (see below). The
 root password stays `kinini` until you change it (`passwd`). Without `-y`
-the installer lists disks, offers **LUKS2 encryption**, **timezone** and
-**locale** pickers, asks whether to enable a **sched_ext scheduler**, asks
-for confirmation and offers to set the root password interactively. After
-it finishes, remove the medium and reboot straight into the installed
-system.
+the installer walks you through everything with plain pickers: **LUKS2
+encryption**, **timezone**, **locale**, the **desktop** (default: the one
+this live session runs — xfce / labwc / none), a **regular user** (name,
+password, sudo/doas/both) and the **sched_ext scheduler**, then asks for
+confirmation and offers to set the root password interactively. After it
+finishes, remove the medium and reboot straight into the installed system.
+
+### Desktop and user flags
+
+```sh
+kiwi-install -D /dev/sda -d xfce -y                      # Xfce + LightDM (default)
+kiwi-install -D /dev/sda -d labwc -y                     # Wayland labwc session
+kiwi-install -D /dev/sda -d none -y                      # console only
+kiwi-install -D /dev/sda -u alice -P /root/alicepw -y    # user 'alice' + sudo
+kiwi-install -D /dev/sda -u alice -P /root/alicepw -A doas -y   # doas instead
+```
+
+`-d` enables the matching services: `xfce` → dbus + seatd + lightdm
+(graphical login, X on tty7), `labwc` → dbus + seatd (log in on a console
+and run `kinini-labwc`), `none` → console system (the desktop packages stay
+installed; enable later with `svctl`). `-u NAME -P FILE` creates the user
+(first line of the file = password), adds it to `wheel,video,audio,input`
+and writes the wheel rule for the chosen `-A` admin tool (`%wheel ALL=
+(ALL:ALL) ALL` in `/etc/sudoers.d/wheel` or `permit persist :wheel` in
+`/etc/doas.conf`). Wireless hardware is detected automatically: the
+`wpa_supplicant` service is enabled and the networks you connected to in
+the live session carry over.
 
 ### Full-disk encryption (LUKS2)
 
 Answer `y` to the encryption question (or pass the flags directly):
 
 ```sh
-kiwi-install -d /dev/sda -e                          # asks for a passphrase twice
-kiwi-install -d /dev/sda -e -p /root/lukskey         # scripted installs
-kiwi-install -d /dev/sda -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd
+kiwi-install -D /dev/sda -e                          # asks for a passphrase twice
+kiwi-install -D /dev/sda -e -p /root/lukskey         # scripted installs
+kiwi-install -D /dev/sda -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd
 ```
 
 The root partition becomes a LUKS2 container (default argon2id KDF) opened
@@ -341,7 +406,9 @@ Scheduler cheat-sheet (same picks as the CachyOS wiki):
 The installer offers to enable a scheduler (`-S scx_lavd` to script it,
 `-S none` to skip; `scx_lavd` is the default in `-y` mode) and mounts
 `bpffs` + loads `sched_ext` at boot in stage 1 regardless, so enabling the
-service later takes exactly one `svctl` command.
+service later takes exactly one `svctl` command. `kinini-power` profiles
+also drive the scheduler: `battery` selects `scx_lavd`, `perf` selects
+`scx_bpfland` — see *Desktop out of the box*.
 
 ## Booting
 
@@ -355,19 +422,24 @@ sched_ext above); the live session keeps running the stock Void kernel.
 ## CI
 
 Every push runs three Void Linux container jobs: one builds both components
-and runs the supervisor test suite (up/down/restart/once, `down` files,
+and runs the test suite (supervisor up/down/restart/once, `down` files,
 `finish` scripts, crash restart, start/stop/check, enable/disable, signals,
-supervisor exit, plus the `svdir` spawn/stop cycle), the second builds a full
-rootfs from live Void repositories and verifies the resulting tree byte by
-byte, and the third builds the complete live ISO — static busybox from
-source, the KiniNi kernel (vanilla LTS compiled with sched_ext + BTF) and a
-cryptsetup-enabled disk initramfs — then **boots it in qemu — BIOS and OVMF
-UEFI — installs to a virtual disk (twice: a plain install and a LUKS2 +
+the `svdir` spawn/stop cycle, service deps, plus the `kinini-wifi` and
+`kinini-power` smoke tests), the second builds a full rootfs from live Void
+repositories and verifies the resulting tree byte by byte, and the third
+builds the complete live ISO — static busybox from source, the KiniNi kernel
+(vanilla stable compiled with sched_ext + BTF + KMS; the kernel build is
+**ccache-cached** alongside its source tarball, cutting the rebuild from
+~2.5 h to under an hour) and a cryptsetup-enabled disk initramfs — then
+**boots it in qemu — BIOS and OVMF UEFI — installs it to a virtual disk
+(three times: a plain install, a desktop + user install and a LUKS2 +
 Europe/Moscow + ru_RU.UTF-8 + scx_lavd install), reboots from the installed
 systems and checks everything** — login, DHCP, zram, the tuning, the
-passphrase unlock, the timezone, the locale, the encrypted swap and the
-attached sched_ext scheduler — over the serial console before uploading the
-ISO as a workflow artifact.
+passphrase unlock, the timezone, the locale, the encrypted swap, the
+attached scheduler, the created user with its groups and sudo, the dbus/
+seatd/lightdm services, the Xorg process and the live Xfce autologin with
+PipeWire — over the serial console before uploading the ISO as a workflow
+artifact.
 
 ## Mascot
 
@@ -415,9 +487,19 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 - `tools/kiwi-install` — установщик на диск: разметка (msdos/GPT),
   **LUKS2-шифрование корня** (пароль запрашивается в initramfs при каждой
   загрузке) с эфемерно шифруемым swap-разделом через `/etc/crypttab`,
-  **выбор часового пояса и локали**, настройка scx-планировщика, копирование
-  live-системы, fstab и загрузчик без сети — extlinux (BIOS) или grub на ESP
+  **выбор часового пояса, локали и рабочего стола** (xfce / labwc / none —
+  по умолчанию тот, что в live-сессии), **создание обычного пользователя**
+  (wheel + sudo/doas), настройка scx-планировщика, копирование live-системы,
+  fstab и загрузчик без сети — extlinux (BIOS) или grub на ESP
   (UEFI, `\EFI\BOOT\BOOTX64.EFI`);
+- **desktop из коробки (0.5)** — live-ISO грузится сразу в графику:
+  LightDM автологинит пользователя `kiwi` в Xfce (tty7), рядом labwc-сессия
+  (`kinini-labwc` из консоли), seatd + dbus; звук — pipewire + wireplumber +
+  pipewire-pulse в сессии пользователя (без конфигов и демонов); Wi-Fi —
+  `kinini-wifi`, TUI-коннектор в духе wifi-menu над `wpa_cli` (без
+  NetworkManager), питание — `kinini-power` (профили battery/perf:
+  governor+EPP, USB autosuspend, энергосбережение wifi, интервал writeback
+  и переключение scx-планировщика; профиль переживает перезагрузку);
 - **tuning** — системные настройки в духе CachyOS: sysctl-профиль
   (swappiness, vfs_cache_pressure, BBR+fq и т.д.), zram-подкачка
   (`zram-swap`, zstd, приоритет 100), udev-правила выбора IO-планировщика
@@ -432,9 +514,14 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 - **kinini-kernel** — своё ядро как у CachyOS: чистый vanilla 6.18.x
   без патчей, собирается в CI из `kernel/kinini-x86_64.config` поверх
   allnoconfig — `CONFIG_SCHED_CLASS_EXT=y` + BTF, все нужные драйверы
-  встроены в ядро (ext4, virtio, AHCI/NVMe, dm-crypt, zram, bfq/kyber,
-  BBR+fq, USB) — initramfs дисковой загрузки не несёт модулей ядра вовсе;
+  встроены (ext4, virtio, AHCI/NVMe, dm-crypt, zram, bfq/kyber, BBR+fq,
+  USB, evdev, звук HDA) + KMS: bochs/virtio-gpu встроены, i915/amdgpu/xe/
+  nouveau — модулями в `/usr/lib/modules` (udev грузит их на установленной
+  системе); initramfs дисковой загрузки по-прежнему без модулей ядра;
   live-сессия при этом продолжает грузить стандартное ядро Void;
+- **CI-кеш ядра** — сборка ядра через ccache с кешированием тарболла
+  исходников (actions/cache): повторная сборка вместо ~2.5 часов занимает
+  меньше часа, зелёный CI стал заметно быстрее;
 - маскот — птичка киви, ASCII-арт устанавливается в
   `/usr/share/kinini/kiwi.txt` и показывается `fastfetch`.
 
@@ -444,8 +531,10 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 `voidlinux/voidlinux`, от root).
 
 **Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
-https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx`,
-затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`.
+https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx \
+sudo opendoas dbus lightdm lightdm-gtk-greeter seatd xfce4 xfce4-pulseaudio-plugin pavucontrol labwc foot fuzzel mesa xorg-server xf86-video-fbdev dejavu-fonts-ttf adwaita-icon-theme xdg-user-dirs pipewire wireplumber alsa-pipewire pulseaudio-utils wpa_supplicant dialog iw polkit`,
+затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`. Live-сессия автологинит
+`kiwi` (пароль `kinini`, sudo без пароля — только live) в Xfce на tty7.
 
 **Загрузка:** три стадии, как в runit; stage-1 после критического пути
 (базовые монтирования + udevd) гоняет независимые задачи параллельно из
@@ -457,23 +546,36 @@ loopback, шифрованный swap из crypttab, zram) с упорядочи
 определяет прошивку сам) и выполните:
 
 ```sh
-kiwi-install -d /dev/nvme0n1 -y    # UEFI: GPT + ESP + grub
-kiwi-install -d /dev/sda -y        # BIOS: msdos + extlinux
-kiwi-install -d /dev/sda -e        # с LUKS2: пароль спросит дважды
-kiwi-install -d /dev/sda -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd
+kiwi-install -D /dev/nvme0n1 -y    # UEFI: GPT + ESP + grub (с 0.5 диск - -D)
+kiwi-install -D /dev/sda -y        # BIOS: msdos + extlinux
+kiwi-install -D /dev/sda -e        # с LUKS2: пароль спросит дважды
+kiwi-install -D /dev/sda -d xfce -u alice -P /root/pw -y   # desktop + юзер
+kiwi-install -D /dev/sda -d labwc -y                       # Wayland-сессия
+kiwi-install -D /dev/sda -e -p /root/lukskey -z Europe/Moscow -l ru_RU.UTF-8 -S scx_lavd
 ```
 
 — разметка, swap-раздел (по умолчанию min(2×RAM, 4 ГиБ), при LUKS —
 эфемерно шифруемый свежим ключом при каждой загрузке), копирование
 системы, fstab, DHCP-сервис, часовой пояс и локаль (`/etc/locale.conf` +
-генерация через glibc-locales), загрузчик — всё без сети. Без `-y`
-установщик показывает диски, предлагает шифрование, часовой пояс,
-локаль и sched_ext-планировщик интерактивными меню. Оба пути (BIOS и
-OVMF/UEFI), а также полный сценарий LUKS2 + Europe/Moscow + ru_RU.UTF-8 +
-scx_lavd проверяются в CI на каждый пуш: QEMU грузит ISO, ставит систему
-на виртуальный диск и перезагружается с неё, проверяя вход, DHCP, zram,
-настройки, разблокировку LUKS, часовой пояс, локаль, шифрованный swap
-и подключённый планировщик по serial-консоли.
+генерация через glibc-locales), **выбор DE** (`-d`: xfce — dbus+seatd+
+lightdm; labwc — dbus+seatd, вход из консоли через `kinini-labwc`; none —
+консольная система), **обычный пользователь** (`-u имя -P файл-с-паролем`,
+группы wheel/video/audio/input + правило для `-A sudo|doas`), Wi-Fi —
+при наличии беспроводного железа `wpa_supplicant` включается автоматически,
+сети из live-сессии переезжают, загрузчик — всё без сети. Без `-y`
+установщик проводит по всем пунктам интерактивными меню (шифрование,
+пояс, локаль, DE, пользователь, планировщик). Оба пути (BIOS и
+OVMF/UEFI), сценарий desktop+пользователь и полный сценарий LUKS2 +
+Europe/Moscow + ru_RU.UTF-8 + scx_lavd проверяются в CI на каждый пуш:
+QEMU грузит ISO, ставит систему на виртуальный диск и перезагружается с
+неё, проверяя вход, DHCP, zram, настройки, разблокировку LUKS, часовой
+пояс, локаль, шифрованный swap, планировщик, пользователя с группами и
+sudo, сервисы dbus/seatd/lightdm, Xorg и live-автологин с PipeWire по
+serial-консоли.
+
+**Desktop:** в live автологин в Xfce под `kiwi`; Wi-Fi подключается через
+`kinini-wifi` (меню сетей, ввод пароля, сохранение), звук появляется сам
+(pipewire в сессии), питание — `kinini-power battery|perf|status`.
 
 **sched_ext (CachyOS-style):** `kipki install scx`, затем
 `svctl enable scx && svctl start scx`; планировщик выбирается в

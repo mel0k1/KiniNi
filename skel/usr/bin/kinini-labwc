@@ -1,0 +1,20 @@
+#!/bin/sh
+# kinini-labwc - start a labwc Wayland session from a console login.
+# seatd provides the seat (the service is enabled for labwc installs),
+# dbus-run-session provides the session bus, XDG autostart in
+# /etc/xdg/labwc/autostart brings up the audio stack.
+[ "$(id -u)" = 0 ] && {
+        echo "kinini-labwc: run as a regular user, not root" >&2
+        exit 1
+}
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+        XDG_RUNTIME_DIR="/run/user/$(id -u)"
+        export XDG_RUNTIME_DIR
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null
+        chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+fi
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] \
+        && command -v dbus-run-session >/dev/null 2>&1; then
+        exec dbus-run-session -- labwc
+fi
+exec labwc

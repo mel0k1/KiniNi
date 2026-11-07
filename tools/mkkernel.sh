@@ -1,14 +1,22 @@
 #!/bin/sh
-# mkkernel.sh - build the KiniNi kernel: pure vanilla LTS tarball with the
-# distro config applied over allnoconfig (kernel/kinini-x86_64.config):
+# mkkernel.sh - build the KiniNi kernel: pure vanilla stable tarball with
+# the distro config applied over allnoconfig (kernel/kinini-x86_64.config):
 # sched_ext enabled (CachyOS-style BPF CPU schedulers), BTF for the scx
-# userspace, and every driver the installed system needs built in, so the
-# disk initramfs ships no kernel modules at all.
+# userspace, and the boot-critical drivers built in, so the disk initramfs
+# ships no kernel modules. only the big KMS GPU drivers (i915, amdgpu,
+# xe, nouveau) are modules; they are packed into modules.tar and live in
+# /usr/lib/modules on the installed system.
 #
 # usage: mkkernel.sh <linux-<ver>.tar.xz> <output-dir>
 #
 # requires: flex bison bc perl pahole (dwarves), libelf + openssl headers.
-# outputs:  <output-dir>/vmlinuz-kinini + <output-dir>/kver
+# outputs:  <output-dir>/vmlinuz-kinini, <output-dir>/kver and
+#           <output-dir>/modules.tar (the =m DRM drivers installed under
+#           /usr/lib/modules/<kver>; udev loads them on the target)
+#
+# ccache: when ccache is on PATH the build goes through it (CCACHE_DIR,
+# CCACHE_MAXSIZE env or /tmp/kinini-ccache). the CI caches the ccache dir
+# plus the source tarball, which cuts the rebuild from ~2.5 h to <1 h.
 set -eu
 
 usage() {
@@ -33,6 +41,18 @@ done
 WORK=$(mktemp -d /tmp/mkkernel.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
+# compile cache (optional): same compiler + sources -> cc hits
+CC="gcc"
+if command -v ccache >/dev/null 2>&1; then
+        CC="ccache gcc"
+        : "${CCACHE_DIR:=/tmp/kinini-ccache}"
+        export CCACHE_DIR
+        : "${CCACHE_MAXSIZE:=5G}"
+        export CCACHE_MAXSIZE
+        mkdir -p "$CCACHE_DIR"
+        echo "mkkernel: ccache enabled ($CCACHE_DIR, max $CCACHE_MAXSIZE)"
+fi
+
 echo "mkkernel: extracting $(basename "$SRCBALL")"
 tar -xf "$SRCBALL" -C "$WORK"
 SRCDIR=$(find "$WORK" -mindepth 1 -maxdepth 1 -type d -name 'linux-*' | head -n 1)
@@ -56,8 +76,14 @@ for opt in 64BIT SMP PREEMPT SCHED_CLASS_EXT DEBUG_INFO_BTF DEBUG_INFO_DWARF5 \
         PERF_EVENTS PROFILING TRACEPOINTS FTRACE FUNCTION_TRACER \
         DYNAMIC_FTRACE FTRACE_SYSCALLS KPROBES KPROBE_EVENTS BPF_EVENTS \
         CPU_FREQ CPU_FREQ_GOV_SCHEDUTIL CPU_FREQ_DEFAULT_GOV_SCHEDUTIL \
-        X86_ACPI_CPUFREQ; do
+        X86_ACPI_CPUFREQ \
+        DRM DRM_BOCHS DRM_VIRTIO_GPU INPUT_EVDEV MOUSE_PS2 HID_GENERIC \
+        SOUND SND SND_HDA_INTEL SND_HDA_GENERIC SND_USB_AUDIO; do
         grep -q "^CONFIG_$opt=y" .config || MISSING="$MISSING $opt"
+done
+# the big GPU drivers may be modules (=m): they load from the rootfs
+for opt in DRM_I915 DRM_AMDGPU DRM_XE DRM_NOUVEAU; do
+        grep -qE "^CONFIG_$opt=[ym]" .config || MISSING="$MISSING $opt"
 done
 if [ -n "$MISSING" ]; then
         echo "mkkernel: options missing after allnoconfig:$MISSING" >&2
@@ -68,10 +94,28 @@ fi
 KVER=$(make -s kernelrelease)
 echo "mkkernel: release: $KVER"
 echo "mkkernel: building bzImage ($(nproc) jobs, BTF via pahole takes a while)"
-make -j"$(nproc)" bzImage
+make -j"$(nproc)" CC="$CC" bzImage
 
 [ -f arch/x86/boot/bzImage ] || { echo "mkkernel: bzImage not produced" >&2; exit 1; }
 mkdir -p "$OUTDIR"
 install -m644 arch/x86/boot/bzImage "$OUTDIR/vmlinuz-kinini"
 printf '%s\n' "$KVER" > "$OUTDIR/kver"
+
+# install the =m GPU drivers (i915/amdgpu/xe/nouveau + their deps) into
+# a staging tree and pack it: the CI drops this into the rootfs so the
+# installed system can load KMS drivers from /usr/lib/modules at boot
+if grep -q '^CONFIG_MODULES=y' .config \
+        && grep -qE '^CONFIG_DRM_(I915|AMDGPU|XE|NOUVEAU)=m' .config; then
+        echo "mkkernel: installing modules (GPU drivers)"
+        make -j"$(nproc)" CC="$CC" INSTALL_MOD_PATH="$WORK/mods" modules_install \
+                >/dev/null
+        [ -d "$WORK/mods/lib/modules/$KVER" ] \
+                || { echo "mkkernel: modules_install produced no tree" >&2; exit 1; }
+        tar -C "$WORK/mods" -cf "$OUTDIR/modules.tar" lib
+        echo "mkkernel: modules: $(du -sh "$OUTDIR/modules.tar" | cut -f1)"
+fi
+
+if command -v ccache >/dev/null 2>&1; then
+        ccache -s 2>/dev/null | sed -n '1,6p' || true
+fi
 echo "mkkernel: done: $OUTDIR/vmlinuz-kinini (release $KVER)"

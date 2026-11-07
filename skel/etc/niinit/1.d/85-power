@@ -1,0 +1,13 @@
+#!/bin/sh
+# apply the persisted power profile (kinini-power battery|perf) at boot.
+# kinini-power apply touches sysfs and sysctl only; the scx scheduler
+# side of a profile is handled by /etc/kinini/scx.conf at service start.
+[ -r /etc/kinini/power.conf ] || exit 0
+# shellcheck disable=SC1091
+. /etc/kinini/power.conf
+case "${KININI_POWER_PROFILE:-}" in
+battery | perf)
+        kinini-power apply "$KININI_POWER_PROFILE" >/dev/null 2>&1 || true
+        ;;
+esac
+exit 0

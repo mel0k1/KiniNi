@@ -1,0 +1,12 @@
+#!/bin/sh
+# LightDM display manager: the graphical seat (X on tty7, greeter or
+# autologin). the lightdm service carries a "deps" file listing 'dbus':
+# the niinit supervisor only spawns it once the system bus is up.
+#
+# config: /etc/lightdm/lightdm.conf (session-wrapper=/usr/bin/kinini-session
+# provides XDG_RUNTIME_DIR and the locale without systemd/elogind).
+# live iso: mkiso.sh adds an autologin block for the 'kiwi' user;
+# kiwi-install strips it back from the installed system.
+# log: /var/log/lightdm.log (service stdout; Xorg/greeter logs live in
+# /var/log/lightdm/)
+exec lightdm >> /var/log/lightdm.log 2>&1

@@ -1,0 +1,3 @@
+# service dependencies (whitespace separated): niinit-svdir spawns this
+# service only when every listed service is supervised and up
+dbus
