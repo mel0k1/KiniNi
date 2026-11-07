@@ -699,6 +699,8 @@ rm -f "$TARGET/etc/sudoers.d/kinini-live" 2>/dev/null || true
 if [ -f "$TARGET/etc/lightdm/lightdm.conf" ]; then
         sed -i '/^autologin-/d' "$TARGET/etc/lightdm/lightdm.conf"
 fi
+# live-only Xorg noaccel tweak: real hardware wants accelerated glamor
+rm -f "$TARGET/etc/X11/xorg.conf.d/10-kinini-live-noaccel.conf" 2>/dev/null || true
 
 # ---------------------------------------------------------------- services
 enable_service() {

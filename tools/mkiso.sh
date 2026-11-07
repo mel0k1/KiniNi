@@ -199,6 +199,20 @@ for s in dbus lightdm seatd; do
                         "$ISOT/rootfs/etc/niinit/services/$s"
         fi
 done
+# live-only Xorg tweak: skip accel (glamor/llvmpipe/LLVM init takes
+# minutes in emulated environments); kiwi-install strips this back so
+# real hardware keeps accelerated glamor
+mkdir -p "$ISOT/rootfs/etc/X11/xorg.conf.d"
+cat > "$ISOT/rootfs/etc/X11/xorg.conf.d/10-kinini-live-noaccel.conf" <<'EOF'
+# written by mkiso.sh for the live session only (kiwi-install strips it):
+# accelerated glamor on the software rasterizer takes minutes to init in
+# slow environments; the desktop works fine without it
+Section "Device"
+        Identifier "KiniNi live noaccel"
+        Driver "modesetting"
+        Option "NoAccel" "true"
+EndSection
+EOF
 # wpa_supplicant is enabled by the 80-wifi stage-1 task when wireless
 # hardware is actually present (no crash loops on wifi-less machines)
 cat >> "$ISOT/rootfs/etc/issue" <<'EOF'
