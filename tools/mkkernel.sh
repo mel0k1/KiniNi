@@ -93,8 +93,11 @@ fi
 
 KVER=$(make -s kernelrelease)
 echo "mkkernel: release: $KVER"
-echo "mkkernel: building bzImage ($(nproc) jobs, BTF via pahole takes a while)"
-make -j"$(nproc)" CC="$CC" bzImage
+echo "mkkernel: building bzImage + modules ($(nproc) jobs, BTF via pahole takes a while)"
+# modules must be an explicit target: 'make bzImage' alone leaves the
+# module objects unbuilt and 'make modules_install' then fails with
+# "No rule to make target 'modules.order'"
+make -j"$(nproc)" CC="$CC" bzImage modules
 
 [ -f arch/x86/boot/bzImage ] || { echo "mkkernel: bzImage not produced" >&2; exit 1; }
 mkdir -p "$OUTDIR"

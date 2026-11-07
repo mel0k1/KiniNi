@@ -111,24 +111,28 @@ case "$out" in
 *done:\ connected\ to\ HomeNet*) ok "menu connect flow completed" ;;
 *)                              bad "connect: got '$out'" ;;
 esac
-grep -q 'add_network' "$FAKE_LOG" \
+if grep -q 'add_network' "$FAKE_LOG" \
         && grep -q 'set_network 0 ssid "HomeNet"' "$FAKE_LOG" \
         && grep -q 'set_network 0 psk' "$FAKE_LOG" \
         && grep -q 'enable_network 0' "$FAKE_LOG" \
         && grep -q 'select_network 0' "$FAKE_LOG" \
-        && grep -q 'save_config' "$FAKE_LOG" \
-        && ok "wpa_cli call sequence" \
-        || bad "wpa_cli call sequence: $(tr '\n' ';' < "$FAKE_LOG")"
+        && grep -q 'save_config' "$FAKE_LOG"; then
+        ok "wpa_cli call sequence"
+else
+        bad "wpa_cli call sequence: $(tr '\n' ';' < "$FAKE_LOG")"
+fi
 
 # 4. open network: key_mgmt NONE, no psk
 : > "$FAKE_LOG"
 printf 'aa:bb:cc:dd:ee:10\t2437\t-60\t[ESS]\tCafeFree\n' > "$FAKE_RESULTS"
 export FAKE_CHOICE=1
 out=$(sh "$TOOL" 2>&1)
-grep -q 'set_network 0 key_mgmt NONE' "$FAKE_LOG" \
-        && ! grep -q 'psk' "$FAKE_LOG" \
-        && ok "open network uses key_mgmt NONE, no psk" \
-        || bad "open network flow: $(tr '\n' ';' < "$FAKE_LOG")"
+if grep -q 'set_network 0 key_mgmt NONE' "$FAKE_LOG" \
+        && ! grep -q 'psk' "$FAKE_LOG"; then
+        ok "open network uses key_mgmt NONE, no psk"
+else
+        bad "open network flow: $(tr '\n' ';' < "$FAKE_LOG")"
+fi
 
 # 5. duplicate cleanup: list_network shows the same ssid -> removed
 : > "$FAKE_LOG"
@@ -136,9 +140,11 @@ printf '0\tHomeNet\tany\t\n' > "$FAKE_LIST"
 printf 'aa:bb:cc:dd:ee:ff\t2412\t-40\t[WPA2-PSK-CCMP][ESS]\tHomeNet\n' > "$FAKE_RESULTS"
 export FAKE_CHOICE=1
 sh "$TOOL" >/dev/null 2>&1
-grep -q 'remove_network 0' "$FAKE_LOG" \
-        && ok "existing network with same ssid removed first" \
-        || bad "duplicate cleanup missing: $(tr '\n' ';' < "$FAKE_LOG")"
+if grep -q 'remove_network 0' "$FAKE_LOG"; then
+        ok "existing network with same ssid removed first"
+else
+        bad "duplicate cleanup missing: $(tr '\n' ';' < "$FAKE_LOG")"
+fi
 
 # 6. dedup + signal sort in the menu items (strongest first)
 : > "$FAKE_LOG"
@@ -188,4 +194,9 @@ case "$out" in
 *)                          bad "missing iface: got '$out'" ;;
 esac
 
-[ "$FAIL" = 0 ] && say "test-wifi: ALL OK" || { say "test-wifi: FAILURES"; exit 1; }
+if [ "$FAIL" = 0 ]; then
+        say "test-wifi: ALL OK"
+else
+        say "test-wifi: FAILURES"
+        exit 1
+fi
