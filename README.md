@@ -96,7 +96,7 @@ IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
         syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx \
         sudo opendoas dbus dbus-x11 lightdm lightdm-gtk-greeter seatd \
         xfce4 xfce4-pulseaudio-plugin pavucontrol labwc foot fuzzel \
-        mesa xorg-server xf86-video-fbdev dejavu-fonts-ttf adwaita-icon-theme \
+        mesa xorg-server xf86-video-fbdev xinit dejavu-fonts-ttf adwaita-icon-theme \
         xdg-user-dirs pipewire wireplumber alsa-pipewire pulseaudio-utils \
         wpa_supplicant dialog iw polkit
 
@@ -538,7 +538,7 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 
 **Live-ISO:** `IGNORE_PKGS=linux ./tools/mkrootfs.sh /tmp/rootfs \
 https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx \
-sudo opendoas dbus dbus-x11 lightdm lightdm-gtk-greeter seatd xfce4 xfce4-pulseaudio-plugin pavucontrol labwc foot fuzzel mesa xorg-server xf86-video-fbdev dejavu-fonts-ttf adwaita-icon-theme xdg-user-dirs pipewire wireplumber alsa-pipewire pulseaudio-utils wpa_supplicant dialog iw polkit`,
+sudo opendoas dbus dbus-x11 lightdm lightdm-gtk-greeter seatd xfce4 xfce4-pulseaudio-plugin pavucontrol labwc foot fuzzel mesa xorg-server xf86-video-fbdev xinit dejavu-fonts-ttf adwaita-icon-theme xdg-user-dirs pipewire wireplumber alsa-pipewire pulseaudio-utils wpa_supplicant dialog iw polkit`,
 затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`. Live-сессия автологинит
 `kiwi` (пароль `kinini`, sudo без пароля — только live) на tty1 и запускает
 Xfce через startxfce4.

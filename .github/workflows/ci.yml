@@ -241,7 +241,7 @@ jobs:
             sudo opendoas dbus dbus-x11 lightdm lightdm-gtk-greeter seatd \
             xfce4 xfce4-pulseaudio-plugin pavucontrol \
             labwc foot fuzzel \
-            mesa xorg-server xf86-video-fbdev \
+            mesa xorg-server xf86-video-fbdev xinit \
             dejavu-fonts-ttf adwaita-icon-theme \
             xdg-user-dirs pipewire wireplumber alsa-pipewire \
             pulseaudio-utils wpa_supplicant dialog iw polkit
