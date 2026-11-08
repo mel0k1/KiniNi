@@ -193,13 +193,13 @@ fi
 # still shipped and is what 'kiwi-install -d xfce' enables on the
 # installed system (a real greeter there). console gettys: ttyS0 root
 # (the installer/rescue path), tty2-6 plain. dbus is on for the session.
-for s in dbus; do
-        if [ -d "$ISOT/rootfs/etc/niinit/services-available/$s" ]; then
-                rm -rf "$ISOT/rootfs/etc/niinit/services/$s"
-                cp -a "$ISOT/rootfs/etc/niinit/services-available/$s" \
-                        "$ISOT/rootfs/etc/niinit/services/$s"
-        fi
-done
+# a real-directory copy, not a symlink: symlinked service dirs do not
+# survive the live overlay spawn (see the dhcpcd note above)
+if [ -d "$ISOT/rootfs/etc/niinit/services-available/dbus" ]; then
+        rm -rf "$ISOT/rootfs/etc/niinit/services/dbus"
+        cp -a "$ISOT/rootfs/etc/niinit/services-available/dbus" \
+                "$ISOT/rootfs/etc/niinit/services/dbus"
+fi
 # the marker that flips /etc/skel/.bash_profile into "startxfce4 on tty1"
 # mode for the live user; kiwi-install removes it from the target
 mkdir -p "$ISOT/rootfs/etc/kinini"
