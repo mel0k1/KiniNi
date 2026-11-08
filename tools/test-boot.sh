@@ -235,7 +235,7 @@ check_live_desktop() {
         send 'grep -qs up /etc/niinit/services/dbus/stat && echo "DBUS""_OK"'
         wait_for "DBUS_OK" "waiting for the dbus service check"
         echo "test-boot: [$FW] dbus service up"
-        # Xorg + xfce4-session + pipewire: LightDM autologin -> X on tty7
+        # Xorg + xfce4-session + pipewire: tty1 autologin -> startxfce4
         # shellcheck disable=SC2016
         send 'for i in $(seq 1 240); do pgrep -x Xorg >/dev/null && pgrep -x xfce4-session >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"; pgrep -x xfce4-session >/dev/null && echo "XFCE""_OK"'
         n=0
@@ -246,7 +246,7 @@ check_live_desktop() {
                 [ "$x" = 1 ] && [ "$xf" = 1 ] && break
                 if [ "$n" -ge 500 ]; then
                         # shellcheck disable=SC2016
-                        send 'echo "=== DESKTOP DIAG ==="; for s in lightdm dbus; do echo "$s: stat=$(cat /etc/niinit/services/$s/stat 2>/dev/null) pid=$(cat /etc/niinit/services/$s/pid 2>/dev/null)"; done; ps -ef | head -30; echo "-- dbus-launch:"; command -v dbus-launch; echo "-- xsessions:"; ls /usr/share/xsessions 2>&1; echo "-- mem:"; free | head -2; echo "-- dri:"; ls /dev/dri 2>&1; echo "-- X11 sockets:"; ls /tmp/.X11-unix 2>&1; echo "-- X alive probe:"; ls /tmp/.X11-unix/X0 2>&1; echo "-- signal masks:"; for p in $(pgrep -x Xorg | head -1) $(pgrep -x lightdm | head -1); do [ -n "$p" ] && { echo "pid $p $(cat /proc/$p/comm 2>/dev/null)"; grep -E "SigBlk|SigIgn|SigCgt|State" /proc/$p/status; cat /proc/$p/wchan 2>/dev/null; echo; }; done; echo "-- lightdm.log (outer):"; tail -30 /var/log/lightdm.log 2>/dev/null; echo "-- lightdm.log (inner, tail 90):"; tail -90 /var/log/lightdm/lightdm.log 2>/dev/null; echo "-- x logs:"; for f in /var/log/lightdm/x-*.log /var/log/Xorg.0.log; do [ -f "$f" ] && { echo "== $f"; tail -25 "$f"; }; done; echo "-- dmesg tail:"; dmesg | tail -6; echo "=== DESKDIAG""_DONE ==="'
+                        send 'echo "=== DESKTOP DIAG ==="; for s in dbus; do echo "$s: stat=$(cat /etc/niinit/services/$s/stat 2>/dev/null) pid=$(cat /etc/niinit/services/$s/pid 2>/dev/null)"; done; echo "-- userspace procs:"; ps -eo pid,ppid,user,comm | grep -vE " \\[[a-z]" | tail -30; echo "-- dbus-launch:"; command -v dbus-launch; echo "-- xsessions:"; ls /usr/share/xsessions 2>&1; echo "-- mem:"; free | head -2; echo "-- dri:"; ls /dev/dri 2>&1; echo "-- X11 sockets:"; ls /tmp/.X11-unix 2>&1; echo "-- X alive probe:"; ls /tmp/.X11-unix/X0 2>&1; echo "-- signal masks:"; for p in $(pgrep -x Xorg | head -1) $(pgrep -x lightdm | head -1); do [ -n "$p" ] && { echo "pid $p $(cat /proc/$p/comm 2>/dev/null)"; grep -E "SigBlk|SigIgn|SigCgt|State" /proc/$p/status; cat /proc/$p/wchan 2>/dev/null; echo; }; done; echo "-- lightdm.log (outer):"; tail -30 /var/log/lightdm.log 2>/dev/null; echo "-- lightdm.log (inner, tail 90):"; tail -90 /var/log/lightdm/lightdm.log 2>/dev/null; echo "-- x logs:"; for f in /var/log/lightdm/x-*.log /var/log/Xorg.0.log; do [ -f "$f" ] && { echo "== $f"; tail -25 "$f"; }; done; echo "-- session log:"; tail -30 /home/kiwi/.xsession-errors 2>/dev/null; echo "-- dmesg tail:"; dmesg | tail -6; echo "=== DESKDIAG""_DONE ==="'
                         sleep 30
                         fail "Xfce session did not start (diag above)"
                 fi
