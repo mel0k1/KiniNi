@@ -13,5 +13,7 @@ esac
 # auto-start X from their shell.
 if [ -f /etc/kinini/live-session ] && [ "$(tty 2>/dev/null)" = /dev/tty1 ] \
         && [ -z "${DISPLAY:-}" ] && [ -x /usr/bin/startxfce4 ]; then
-        exec startxfce4
+        # the tty1 console is not a serial line: capture the session output
+        # for debugging (~/.xsession-errors)
+        exec startxfce4 > "$HOME/.xsession-errors" 2>&1
 fi
