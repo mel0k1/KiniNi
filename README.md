@@ -110,14 +110,17 @@ qemu-system-x86_64 -m 2048 -cdrom kinini-0.5-x86_64.iso -boot d
 qemu-system-x86_64 -m 2048 -cdrom kinini-0.5-x86_64.iso -bios OVMF.fd
 ```
 
-The live session boots straight into the **desktop**: LightDM autologins the
+The live session boots straight into the **desktop**: tty1 autologins the
 live user `kiwi` (password `kinini`, passwordless `sudo` — a live-only
-convenience the installer removes) into an **Xfce** session on tty7; the
-console gettys stay on tty1–tty6. A **labwc** Wayland session ships too
-(`kinini-labwc` from a console login). DHCP is up (`dhcpcd`), wireless is
-enabled when hardware is present, and the PipeWire audio stack starts in the
-session — sound with zero configuration. The bird still greets the
-consoles:
+convenience the installer removes) and execs **startxfce4** — X comes up via
+xinit and the **Xfce** session takes the first console, the way live images
+without systemd have always done it (LightDM is shipped and is what the
+installer enables on the installed system — a real graphical login there).
+The console gettys stay on tty2–tty6 plus root on the serial console. A
+**labwc** Wayland session ships too (`kinini-labwc` from a console login;
+`svctl enable seatd` first). DHCP is up (`dhcpcd`), wireless is enabled when
+hardware is present, and the PipeWire audio stack starts in the session —
+sound with zero configuration. The bird still greets the consoles:
 
 <p align="center">
   <img src="assets/screenshot-fastfetch.png" width="720" alt="KiniNi live console with fastfetch and the kiwi mascot"/>
@@ -128,8 +131,9 @@ consoles:
 The 0.5 release is desktop-first: graphics, sound, a user and wifi are set
 up before you touch anything.
 
-- **Graphics**: Xfce 4.20 + LightDM/seatd and a labwc Wayland session ship
-  on the ISO; `mesa` is on board. The KiniNi kernel has KMS built in
+- **Graphics**: an Xfce 4.20 live session (tty1 autologin + startxfce4),
+  LightDM for installed systems, a labwc Wayland session on the side;
+  `mesa` is on board. The KiniNi kernel has KMS built in
   (bochs/virtio-gpu in the kernel; i915, amdgpu, xe and nouveau as modules
   loaded by udev on the installed system). Modern AMD/NVIDIA cards also need
   firmware: `kipki install linux-firmware`.
@@ -493,9 +497,11 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
   fstab и загрузчик без сети — extlinux (BIOS) или grub на ESP
   (UEFI, `\EFI\BOOT\BOOTX64.EFI`);
 - **desktop из коробки (0.5)** — live-ISO грузится сразу в графику:
-  LightDM автологинит пользователя `kiwi` в Xfce (tty7), рядом labwc-сессия
-  (`kinini-labwc` из консоли), seatd + dbus; звук — pipewire + wireplumber +
-  pipewire-pulse в сессии пользователя (без конфигов и демонов); Wi-Fi —
+  tty1 автологинит пользователя `kiwi` и запускает `startxfce4` (X через
+  xinit — без display manager в live; LightDM достаётся установленной
+  системе), рядом labwc-сессия (`kinini-labwc` из консоли); звук — pipewire +
+  wireplumber + pipewire-pulse в сессии пользователя (без конфигов и
+  демонов); Wi-Fi —
   `kinini-wifi`, TUI-коннектор в духе wifi-menu над `wpa_cli` (без
   NetworkManager), питание — `kinini-power` (профили battery/perf:
   governor+EPP, USB autosuspend, энергосбережение wifi, интервал writeback
@@ -534,7 +540,8 @@ Void Linux: тысячи готовых пакетов без сборки. Пр
 https://repo-default.voidlinux.org/current base-system linux6.12 fastfetch syslinux dhcpcd dosfstools cryptsetup tzdata glibc-locales scx \
 sudo opendoas dbus dbus-x11 lightdm lightdm-gtk-greeter seatd xfce4 xfce4-pulseaudio-plugin pavucontrol labwc foot fuzzel mesa xorg-server xf86-video-fbdev dejavu-fonts-ttf adwaita-icon-theme xdg-user-dirs pipewire wireplumber alsa-pipewire pulseaudio-utils wpa_supplicant dialog iw polkit`,
 затем `./tools/mkiso.sh /tmp/rootfs kinini.iso`. Live-сессия автологинит
-`kiwi` (пароль `kinini`, sudo без пароля — только live) в Xfce на tty7.
+`kiwi` (пароль `kinini`, sudo без пароля — только live) на tty1 и запускает
+Xfce через startxfce4.
 
 **Загрузка:** три стадии, как в runit; stage-1 после критического пути
 (базовые монтирования + udevd) гоняет независимые задачи параллельно из
