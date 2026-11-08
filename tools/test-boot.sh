@@ -221,9 +221,10 @@ wait_live_shell() {
 }
 
 check_live_desktop() {
-        # the live desktop: user 'kiwi', dbus/lightdm services up,
-        # LightDM autologin brings X and the Xfce session up on tty7 and
-        # the XDG autostart starts the PipeWire stack for that session.
+        # the live desktop: user 'kiwi', dbus service up, the tty1 shell
+        # autologins kiwi and execs startxfce4 (xinit brings X up on the
+        # fly - no display manager in the live image), the XDG autostart
+        # starts the PipeWire stack in that session.
         # everything is slow under TCG: bounded poll loops with a diag
         # dump before failing.
         send 'id kiwi >/dev/null 2>&1 && echo "KIWI""_OK"'
@@ -231,19 +232,9 @@ check_live_desktop() {
         send 'test -x /usr/bin/startxfce4 -a -x /usr/bin/labwc -a -x /usr/bin/lightdm && echo "DESKPKGS""_OK"'
         wait_for "DESKPKGS_OK" "waiting for the desktop packages check"
         # shellcheck disable=SC2016
-        send 'for s in dbus lightdm; do grep -qs up /etc/niinit/services/$s/stat || echo "MISS$s"; done; grep -qs up /etc/niinit/services/lightdm/stat && echo "LDM""_OK"'
-        n=0
-        while ! grep -qs "LDM_OK" "$LOG"; do
-                if [ "$n" -ge 120 ]; then
-                        # shellcheck disable=SC2016
-                        send 'echo "=== LDM DIAG ==="; for s in dbus lightdm; do echo "$s: $(cat /etc/niinit/services/$s/stat 2>/dev/null)"; done; tail -12 /var/log/lightdm.log 2>/dev/null; grep -qs MISS lightdm /dev/null; echo "=== LDMDIAG""_DONE ==="'
-                        sleep 4
-                        fail "lightdm service not up (diag above)"
-                fi
-                sleep 2
-                n=$(( n + 2 ))
-        done
-        echo "test-boot: [$FW] lightdm service up"
+        send 'grep -qs up /etc/niinit/services/dbus/stat && echo "DBUS""_OK"'
+        wait_for "DBUS_OK" "waiting for the dbus service check"
+        echo "test-boot: [$FW] dbus service up"
         # Xorg + xfce4-session + pipewire: LightDM autologin -> X on tty7
         # shellcheck disable=SC2016
         send 'for i in $(seq 1 240); do pgrep -x Xorg >/dev/null && pgrep -x xfce4-session >/dev/null && break; sleep 2; done; pgrep -x Xorg >/dev/null && echo "XORG""_OK"; pgrep -x xfce4-session >/dev/null && echo "XFCE""_OK"'

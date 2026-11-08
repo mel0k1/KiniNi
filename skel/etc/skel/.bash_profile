@@ -5,3 +5,13 @@ case $- in
                 fastfetch
         fi ;;
 esac
+
+# live-only: tty1 IS the graphical session (the desktop boots straight
+# into Xfce via xinit - no display manager in the live image; LightDM is
+# used on installed systems instead). the marker file is written by
+# mkiso.sh and removed by kiwi-install, so fresh installed users never
+# auto-start X from their shell.
+if [ -f /etc/kinini/live-session ] && [ "$(tty 2>/dev/null)" = /dev/tty1 ] \
+        && [ -z "${DISPLAY:-}" ] && [ -x /usr/bin/startxfce4 ]; then
+        exec startxfce4
+fi

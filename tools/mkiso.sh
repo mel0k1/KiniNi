@@ -184,25 +184,30 @@ fi
 
 # --- desktop live session ------------------------------------------------
 # the live iso ships the full desktop (Xfce + labwc + LightDM, see the
-# package list in ci.yml). LightDM autologins the live user 'kiwi' into
-# Xfce on tty7; the console gettys (tty1 root, tty2-6) stay for the
-# installer and rescue work. kiwi-install removes the autologin block
-# and re-picks the enabled services from the flags at install time.
-if [ -f "$ISOT/rootfs/etc/lightdm/lightdm.conf" ]; then
-        sed -i '/^\[Seat:\*\]/a autologin-user=kiwi\nautologin-session=xfce\nautologin-timeout=0' \
-                "$ISOT/rootfs/etc/lightdm/lightdm.conf"
-fi
-# seatd stays disabled on the live desktop: xfce4 pulls in elogind (it
-# activates on demand through dbus and provides the logind API LightDM
-# and Xorg use), and running seatd next to it means two daemons fighting
-# for the same seat. labwc users start it by hand (svctl enable seatd).
-for s in dbus lightdm; do
+# package list in ci.yml). the graphical session starts the simple way,
+# the way live ISOs without systemd have always done it: tty1 autologins
+# the live user 'kiwi' and the shell execs startxfce4 (xinit brings up X
+# on the fly). no display manager in the live image: LightDM waits for a
+# SIGUSR1 "ready" handshake it cannot see without a proper seat manager,
+# while xinit is a plain fork+exec pair that always works. LightDM is
+# still shipped and is what 'kiwi-install -d xfce' enables on the
+# installed system (a real greeter there). console gettys: ttyS0 root
+# (the installer/rescue path), tty2-6 plain. dbus is on for the session.
+for s in dbus; do
         if [ -d "$ISOT/rootfs/etc/niinit/services-available/$s" ]; then
                 rm -rf "$ISOT/rootfs/etc/niinit/services/$s"
                 cp -a "$ISOT/rootfs/etc/niinit/services-available/$s" \
                         "$ISOT/rootfs/etc/niinit/services/$s"
         fi
 done
+# the marker that flips /etc/skel/.bash_profile into "startxfce4 on tty1"
+# mode for the live user; kiwi-install removes it from the target
+mkdir -p "$ISOT/rootfs/etc/kinini"
+: > "$ISOT/rootfs/etc/kinini/live-session"
+# console autologins: root on the serial console, kiwi on tty1 (graphics).
+# the earlier tweak already put -a root on tty1; swap it to the live user
+sed -i 's/agetty -a root/agetty -a kiwi/' \
+        "$ISOT/rootfs/etc/niinit/services/getty-tty1/run" 2>/dev/null || true
 # live-only Xorg tweak: skip accel (glamor/llvmpipe/LLVM init takes
 # minutes in emulated environments); kiwi-install strips this back so
 # real hardware keeps accelerated glamor

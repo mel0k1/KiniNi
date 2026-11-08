@@ -701,6 +701,12 @@ if [ -f "$TARGET/etc/lightdm/lightdm.conf" ]; then
 fi
 # live-only Xorg noaccel tweak: real hardware wants accelerated glamor
 rm -f "$TARGET/etc/X11/xorg.conf.d/10-kinini-live-noaccel.conf" 2>/dev/null || true
+# live-only "tty1 starts Xfce" marker (see /etc/skel/.bash_profile):
+# installed users log into a normal console
+rm -f "$TARGET/etc/kinini/live-session" 2>/dev/null || true
+# the live autologin on tty1 belongs to the live user only
+sed -i 's/agetty -a kiwi/agetty/' \
+        "$TARGET/etc/niinit/services/getty-tty1/run" 2>/dev/null || true
 
 # ---------------------------------------------------------------- services
 enable_service() {
